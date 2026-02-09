@@ -39,13 +39,25 @@ const createIngresoModel = async (data) => {
     fecha,
     monto,
     metodo_pago,
-    referencia
+    referencia,
+    creado_por
   } = data;
 
   const [res] = await pool.query(`
     INSERT INTO ingresos
-      (club_id, jugador_id, cargo_id, tipo, concepto, fecha, monto, metodo_pago, referencia)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (
+        club_id,
+        jugador_id,
+        cargo_id,
+        tipo,
+        concepto,
+        fecha,
+        monto,
+        metodo_pago,
+        referencia,
+        creado_por
+      )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     club_id,
     jugador_id,
@@ -55,7 +67,8 @@ const createIngresoModel = async (data) => {
     fecha,
     monto,
     metodo_pago,
-    referencia
+    referencia,
+    creado_por
   ]);
 
   return { ingreso_id: res.insertId };

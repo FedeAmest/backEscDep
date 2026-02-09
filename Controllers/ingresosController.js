@@ -18,11 +18,14 @@ const getAllIngresosByClub = async (req, res) => {
 
 const createIngreso = async (req, res) => {
   try {
-    const { club_id } = req.auth;
+    const { club_id, user_id } = req.auth;
+
     const ingreso = await createIngresoModel({
       ...req.body,
-      club_id
+      club_id,
+      creado_por: user_id
     });
+
     res.status(201).json(ingreso);
   } catch (error) {
     console.error(error);

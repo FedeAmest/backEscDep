@@ -1,0 +1,6766 @@
+
+
+--- INICIO ARCHIVO: app.js ---
+const express = require('express');
+const app = express();
+
+const cookieParser = require('cookie-parser');
+
+const cors = require('cors');
+
+const routes = require('./Routes/index');
+
+const PORT = process.env.PORT || 3000;
+
+app.use(cors({
+    origin: 'http://127.0.0.1:5500', // Reemplaza con el origen de tu frontend
+    credentials: true // Permite el envío de cookies
+}));
+app.use(express.json());
+
+app.use(cookieParser());
+
+
+app.use('/', routes);
+
+
+
+
+
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
+
+--- FIN ARCHIVO: app.js ---
+
+
+--- INICIO ARCHIVO: Controllers\asistenciasController.js ---
+const {
+  createAsistenciasModel,
+  getAsistenciasByEntrenamientoModel
+} = require('../Models/asistencias');
+
+const createAsistencias = async (req, res) => {
+  const { entrenamiento_id, jugadores, fecha } = req.body;
+
+  await createAsistenciasModel({
+    entrenamiento_id,
+    jugadores,
+    fecha
+  });
+
+  res.status(201).json({ created: true });
+};
+
+const getAsistenciasByEntrenamiento = async (req, res) => {
+  const asistencias = await getAsistenciasByEntrenamientoModel(
+    req.params.entrenamiento_id
+  );
+  res.json(asistencias);
+};
+
+module.exports = {
+  createAsistencias,
+  getAsistenciasByEntrenamiento
+};
+--- FIN ARCHIVO: Controllers\asistenciasController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\authController.js ---
+
+const { login} = require("../Services/userServices.js");
+
+
+const loginController = async (req, res) => {
+  
+  const { identifier, password } = req.body;
+if (!identifier || !password) {
+    return res.status(400).json({ error: "Faltan credenciales" });
+  }
+try {
+  const token = await login(identifier, password);
+
+  res.cookie("authToken", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "Lax",
+    maxAge: 1000 * 60 * 60 * 10 // 10 horas
+  });
+  
+  res.json({ message: "Login exitoso", token });
+} catch (error) {
+
+  res.status(error.status || 500).json({ error: error.message + " lalalala" });
+}
+}
+
+
+const { verifyAndRefreshToken } = require("../Services/authService");
+
+const validateSession = async (req, res) => {
+  const token = req.cookies.authToken;
+
+
+
+  if (!token) {
+    return res.status(401).json({ error: "No hay token" });
+  }
+
+  const { valid, payload, newToken } = await verifyAndRefreshToken(token);
+
+
+  if (!valid) {
+    return res.status(401).json({ error: "Token invalido" });
+  }
+
+  // opcional: renovar la cookie si hay sliding session
+  if (newToken) {
+    res.cookie("authToken", newToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "Lax",
+      maxAge: 1000 * 60 * 60 * 10
+    });
+  }
+  res.json({payload});
+};
+
+
+
+// ------------------------------------------------------NUEVO MODULO PARA CREAR USUARIOS DESDE INVITACION ------------------------------------------------------
+
+
+const bcrypt = require("bcrypt");
+const {
+  getInviteByTokenModel,
+  markInviteAsAcceptedModel
+} = require("../Models/invitaciones");
+
+const { createUserModel } = require("../Models/usuarios");
+const { assignUserToClub } = require("../Models/usuariosClubes");
+
+const registerFromInvite = async (req, res) => {
+  try {
+    const { token, nombre, username, password } = req.body;
+
+    if (!token || !nombre || !username || !password) {
+      return res.status(400).json({ error: "Datos incompletos" });
+    }
+
+    const invite = await getInviteByTokenModel(token);
+
+    if (!invite) {
+      return res.status(404).json({ error: "Invitación inválida" });
+    }
+
+    if (invite.estado !== "pendiente") {
+      return res.status(409).json({ error: "La invitación ya fue utilizada" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = await createUserModel({
+      club_id: invite.club_id,// eliminar luego de la migracion a nueva estructura
+      nombre,
+      username,
+      email: invite.email,
+      password: hashedPassword,
+    });
+
+    await assignUserToClub(
+      newUser.user_id,
+      invite.club_id,
+      invite.tipo
+    );
+
+    await markInviteAsAcceptedModel(invite.invitacion_id);
+
+    res.status(201).json({
+      message: "Usuario creado correctamente",
+      user_id: newUser.user_id
+    });
+
+  } catch (error) {
+    console.error("registerFromInvite error:", error);
+    res.status(500).json({ error: "Error interno del servidor" });
+  }
+};
+
+
+
+module.exports = {
+  login: loginController,
+  registerFromInvite: registerFromInvite,
+  validateSession: validateSession
+};
+--- FIN ARCHIVO: Controllers\authController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\cargosController.js ---
+const {
+  getCargoByIdModel,
+  getCargosByJugadorModel,
+  getCargosByClubModel,
+  createCargoModel,
+  updateCargoEstadoModel,
+  deleteCargoModel
+} = require('../Models/cargos');
+
+/* ===============================
+   CARGOS POR JUGADOR
+================================ */
+const getCargosByJugador = async (req, res) => {
+  console.log('🔍 getCargosByJugador - jugador_id:', req.params.jugador_id); // Debug log
+  const { jugador_id } = req.params;
+  const cargos = await getCargosByJugadorModel(jugador_id);
+  res.json(cargos);
+};
+
+/* ===============================
+   CARGOS POR CLUB
+================================ */
+const getCargosByClub = async (req, res) => {
+  const { club_id } = req.auth;
+  const cargos = await getCargosByClubModel(club_id);
+  res.json(cargos);
+};
+
+/* ===============================
+   CREAR CARGO
+================================ */
+const createCargo = async (req, res) => {
+  const cargo = await createCargoModel(req.body);
+  res.status(201).json(cargo);
+};
+
+/* ===============================
+   ACTUALIZAR ESTADO
+================================ */
+const updateCargoEstado = async (req, res) => {
+  const { cargo_id } = req.params;
+  const { estado } = req.body;
+
+  const ok = await updateCargoEstadoModel(cargo_id, estado);
+  if (!ok) return res.status(404).json({ error: 'Cargo no encontrado' });
+
+  res.json({ message: 'Estado actualizado' });
+};
+
+/* ===============================
+   ELIMINAR CARGO
+================================ */
+const deleteCargo = async (req, res) => {
+  const { cargo_id } = req.params;
+  const ok = await deleteCargoModel(cargo_id);
+
+  if (!ok) return res.status(404).json({ error: 'Cargo no encontrado' });
+
+  res.json({ message: 'Cargo anulado' });
+};
+
+/* ===============================
+  OBTENER CARGO POR ID
+================================ */
+const getCargoById = async (req, res) => {
+  const { cargo_id } = req.params;
+
+  const cargo = await getCargoByIdModel(cargo_id);
+
+  if (!cargo) {
+    return res.status(404).json({ error: 'Cargo no encontrado' });
+  }
+
+  res.json(cargo);
+};
+
+module.exports = {
+  getCargoById,
+  getCargosByJugador,
+  getCargosByClub,
+  createCargo,
+  updateCargoEstado,
+  deleteCargo
+};
+--- FIN ARCHIVO: Controllers\cargosController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\categoriaController.js ---
+const { getAllModel, createCategoryModel, deleteCategoryModel ,updateCategoryModel} = require('../Models/categorias.js');
+
+const getAllCategories = async (req, res) => {
+    try {
+        const { club_id } = req.auth;
+        const {user_id} = req.auth;
+
+
+        
+        const categorias = await getAllModel(club_id);
+
+        res.json(categorias);
+    } catch (error) {
+        
+        res.status(500).json({ error: 'Error al obtener las categorías' });
+    }
+}
+
+
+const createCategory = async (req, res) => {
+    try {
+        
+        const { club_id } = req.auth;
+        const { nombre, profesor, genero} = req.body;
+        
+        const categoryId = await createCategoryModel( {nombre, profesor, genero, club_id});
+
+        res.status(201).json({ id: categoryId });
+    } catch (error) {
+        res.status(500).json({ error: 'Error al crear la categoría' });
+    }
+};
+
+const updateCategory = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updatedData = req.body;
+        const affectedRows = await updateCategoryModel(id, updatedData);
+        if (affectedRows === 0) {
+            return res.status(404).json({ error: 'Categoría no encontrada' });
+        }
+        res.json({ message: 'Categoría actualizada correctamente' });
+    } catch (error) {
+        res.status(500).json({ error: 'Error al actualizar la categoría' });
+    }
+};
+
+const deleteCategory = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const affectedRows = await deleteCategoryModel(id);
+        if (affectedRows === 0) {
+            return res.status(404).json({ error: 'Categoría no encontrada' });
+        }
+        res.json({ message: 'Categoría eliminada correctamente' });
+    } catch (error) {
+        res.status(500).json({ error: 'Error al eliminar la categoría' });
+    }
+};
+
+
+module.exports = { getAllCategories, createCategory, updateCategory, deleteCategory };
+--- FIN ARCHIVO: Controllers\categoriaController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\clientesController.js ---
+const {
+  getAllClientesModel,
+  getClienteByIdModel,
+  createClienteModel,
+  updateClienteModel,
+  deleteClienteModel
+} = require('../Models/clientes');
+
+const getAllClientes = async (req, res) => {
+  res.json(await getAllClientesModel());
+};
+
+const getClienteById = async (req, res) => {
+  res.json(await getClienteByIdModel(req.params.cliente_id));
+};
+
+const createCliente = async (req, res) => {
+  res.status(201).json(await createClienteModel(req.body));
+};
+
+const updateCliente = async (req, res) => {
+  res.json(await updateClienteModel(req.params.cliente_id, req.body));
+};
+
+const deleteCliente = async (req, res) => {
+  res.json({ deleted: await deleteClienteModel(req.params.cliente_id) });
+};
+
+module.exports = {
+  getAllClientes,
+  getClienteById,
+  createCliente,
+  updateCliente,
+  deleteCliente
+};
+--- FIN ARCHIVO: Controllers\clientesController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\clubesController.js ---
+const { getAllClubsModel, getByClienteIdModel, createClubModel,deleteClubModel,updateClubModel } = require('../Models/clubes');
+
+const getAllClubs = async (req, res) => {
+  try {
+    const clubs = await getAllClubsModel();
+    res.json(clubs);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener los clubes' });
+  }
+};
+
+const getClubsByClient = async (req, res) => {
+  const { cliente_id } = req.params;
+  try {
+    const clubs = await getByClienteIdModel(cliente_id);
+    res.json(clubs);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener los clubes del cliente' });
+  }
+};
+
+const deleteClub = async (req, res) => {
+    const { club_id } = req.params;
+    try {
+        const result = await deleteClubModel(club_id);
+        if (result) {
+            res.json({ message: 'Club eliminado exitosamente' });
+        } else {
+            res.status(404).json({ error: 'Club no encontrado' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: 'Error al eliminar el club' });
+    }
+};
+
+const updateClub = async (req, res) => {
+    const { club_id } = req.params;
+    const clubData = req.body;
+    try {
+        const updatedClub = await updateClubModel(club_id, clubData);
+        res.json(updatedClub);
+    } catch (error) {
+        res.status(500).json({ error: 'Error al actualizar el club' });
+    }
+};
+
+const createClub = async (req, res) => {
+    const clubData = req.body;
+    try {
+        const newClub = await createClubModel(clubData);
+        res.status(201).json(newClub);
+    } catch (error) {
+        res.status(500).json({ error: 'Error al crear el club' });
+    }
+};
+
+module.exports = { getAllClubs, getClubsByClient, createClub, updateClub, deleteClub };
+--- FIN ARCHIVO: Controllers\clubesController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\createData.js ---
+const bcrypt = require("bcrypt");
+
+const generatePass = async (password) => {
+    const salt = await bcrypt.genSalt(10);
+    return await bcrypt.hash(password, salt);
+};
+
+module.exports = { generatePass };
+--- FIN ARCHIVO: Controllers\createData.js ---
+
+
+--- INICIO ARCHIVO: Controllers\descuentosJugadoresController.js ---
+const {
+  getDescuentoByJugadorIdModel,
+  createDescuentoModel,
+  updateDescuentoModel,
+  deleteDescuentoModel
+} = require('../Models/descuentosJugadores');
+
+const getDescuentoByJugador = async (req, res) => {
+  const { jugador_id } = req.params;
+  const descuento = await getDescuentoByJugadorIdModel(jugador_id);
+  res.json(descuento);
+};
+
+const createDescuento = async (req, res) => {
+  const id = await createDescuentoModel(req.body);
+  res.status(201).json({ descuento_jugador_id: id });
+};
+
+const updateDescuento = async (req, res) => {
+  const { id } = req.params;
+  await updateDescuentoModel(id, req.body);
+  res.json({ message: 'Descuento actualizado' });
+};
+
+const deleteDescuento = async (req, res) => {
+  const { id } = req.params;
+  await deleteDescuentoModel(id);
+  res.json({ message: 'Descuento desactivado' });
+};
+
+module.exports = {
+  getDescuentoByJugador,
+  createDescuento,
+  updateDescuento,
+  deleteDescuento
+};
+--- FIN ARCHIVO: Controllers\descuentosJugadoresController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\encuentroJugadorController.js ---
+const {  getAllJugadoresByEncuentroIdModel, getAllEncuentrosByJugadorIdModel, createEncuentroJugadorModel, updateEncuentroJugadorModel, deleteEncuentroJugadorModel } = require('../Models/encuentroJugadores');
+
+const getAllJugadoresByEncuentroId = async (req, res) => {
+  const { encuentro_id } = req.params;
+  const jugadores = await getAllJugadoresByEncuentroIdModel(encuentro_id);
+  res.json(jugadores);
+};
+
+const getAllEncuentrosByJugadorId = async (req, res) => {
+  const { jugador_id } = req.params;
+  const encuentros = await getAllEncuentrosByJugadorIdModel(jugador_id);
+  res.json(encuentros);
+};
+
+
+const createEncuentroJugador = async (req, res) => {
+  const data = req.body;
+  const nuevoEncuentroJugador = await createEncuentroJugadorModel(data);
+  res.status(201).json(nuevoEncuentroJugador);
+};
+
+const updateEncuentroJugador = async (req, res) => {
+  const data = req.body;
+  const updatedEncuentroJugador = await updateEncuentroJugadorModel(data);
+  res.json(updatedEncuentroJugador);
+};
+
+const deleteEncuentroJugador = async (req, res) => {
+  const { encuentro_id, jugador_id } = req.params;
+  await deleteEncuentroJugadorModel(encuentro_id, jugador_id);
+  res.sendStatus(204);
+};
+
+module.exports = {
+  getAllJugadoresByEncuentroId,
+  getAllEncuentrosByJugadorId,
+  createEncuentroJugador,
+  updateEncuentroJugador,
+  deleteEncuentroJugador
+};
+--- FIN ARCHIVO: Controllers\encuentroJugadorController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\encuentrosController.js ---
+const {
+  getEncuentroByIdModel,
+  createEncuentroModel,
+  updateEncuentroModel,
+  deleteEncuentroModel,
+  getUltimosEncuentrosByClubModel,
+  getDetalleEncuentroModel
+} = require('../Models/encuentros');
+
+const { getClubByIdModel } = require('../Models/clubes');
+
+/* =========================
+   CREATE (lógica central)
+========================= */
+
+const createEncuentro = async (req, res) => {
+  const {
+    torneo_categoria_id,
+    fecha,
+    condicion,
+    rival,
+    goles_local,
+    goles_visitante
+  } = req.body;
+
+  const club = await getClubByIdModel(req.auth.club_id);
+  const nombreClub = club.nombre;
+ 
+  let equipo_local, equipo_visitante;
+  let gl, gv;
+
+  if (condicion === 'local') {
+    equipo_local = nombreClub;
+    equipo_visitante = rival;
+    gl = goles_local;
+    gv = goles_visitante;
+  } else {
+    equipo_local = rival;
+    equipo_visitante = nombreClub;
+    gl = goles_local;
+    gv = goles_visitante;
+  }
+
+  let resultado = 'empate';
+  if (gl !== gv) {
+    const ganoLocal = gl > gv;
+    const clubEsLocal = equipo_local === nombreClub;
+    resultado =
+      (ganoLocal && clubEsLocal) || (!ganoLocal && !clubEsLocal)
+        ? 'victoria'
+        : 'derrota';
+  }
+
+  const encuentro = await createEncuentroModel({
+    torneo_categoria_id,
+    fecha,
+    equipo_local,
+    equipo_visitante,
+    goles_local: gl,
+    goles_visitante: gv,
+    resultado
+  });
+
+  res.status(201).json(encuentro);
+};
+
+/* =========================
+   GETs
+========================= */
+
+const getEncuentroById = async (req, res) => {
+  const encuentro = await getDetalleEncuentroModel(req.params.encuentro_id);
+  res.json(encuentro);
+};
+
+const getUltimosEncuentrosByClub = async (req, res) => {
+  const encuentros = await getUltimosEncuentrosByClubModel(req.auth.club_id);
+  res.json(encuentros);
+};
+
+/* =========================
+   UPDATE / DELETE
+========================= */
+
+const updateEncuentro = async (req, res) => {
+  await updateEncuentroModel(req.params.encuentro_id, req.body);
+  res.json({ updated: true });
+};
+
+const deleteEncuentro = async (req, res) => {
+  await deleteEncuentroModel(req.params.encuentro_id);
+  res.json({ deleted: true });
+};
+
+module.exports = {
+  createEncuentro,
+  getEncuentroById,
+  getUltimosEncuentrosByClub,
+  updateEncuentro,
+  deleteEncuentro
+};
+--- FIN ARCHIVO: Controllers\encuentrosController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\entrenamientosController.js ---
+const {
+  createEntrenamientoModel,
+  getEntrenamientosByCategoriaModel,
+  deleteEntrenamientoModel
+} = require('../Models/entrenamientos');
+
+const createEntrenamiento = async (req, res) => {
+  const { categoria_id, fecha } = req.body;
+
+  const entrenamiento = await createEntrenamientoModel({
+    categoria_id,
+    fecha
+  });
+
+  res.status(201).json(entrenamiento);
+};
+
+const getEntrenamientosByCategoria = async (req, res) => {
+  const { categoria_id } = req.params;
+  const entrenamientos = await getEntrenamientosByCategoriaModel(categoria_id);
+  res.json(entrenamientos);
+};
+
+const deleteEntrenamiento = async (req, res) => {
+  await deleteEntrenamientoModel(req.params.entrenamiento_id);
+  res.json({ deleted: true });
+};
+
+module.exports = {
+  createEntrenamiento,
+  getEntrenamientosByCategoria,
+  deleteEntrenamiento
+};
+--- FIN ARCHIVO: Controllers\entrenamientosController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\estadisticasJugadoresController.js ---
+const {
+  getEstadisticasByEncuentroModel,
+  createEstadisticaModel,
+  deleteEstadisticasByEncuentroModel
+} = require('../Models/estadisticasJugadores');
+
+const getEstadisticasByEncuentro = async (req, res) => {
+  const stats = await getEstadisticasByEncuentroModel(req.params.encuentro_id);
+  res.json(stats);
+};
+
+const createEstadisticas = async (req, res) => {
+  const { encuentro_id, estadisticas } = req.body;
+
+  // borra y vuelve a insertar (snapshot del partido)
+  await deleteEstadisticasByEncuentroModel(encuentro_id);
+
+  for (const stat of estadisticas) {
+    await createEstadisticaModel({
+      encuentro_id,
+      ...stat
+    });
+  }
+
+  res.status(201).json({ created: true });
+};
+
+module.exports = {
+  getEstadisticasByEncuentro,
+  createEstadisticas
+};
+--- FIN ARCHIVO: Controllers\estadisticasJugadoresController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\estadoCuentaController.js ---
+const estadoCuentaModel = require('../Models/estadoCuenta');
+
+async function obtenerEstadoCuenta(req, res) {
+  try {
+    const { jugador_id } = req.params;
+
+    const movimientos = await estadoCuentaModel.getEstadoCuentaJugador(jugador_id);
+    const resumen = await estadoCuentaModel.getResumenEconomicoJugador(jugador_id);
+    const deuda = await estadoCuentaModel.getDeudaActualJugador(jugador_id);
+
+    res.json({
+      jugador_id,
+      resumen,
+      deuda,
+      movimientos
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener estado de cuenta' });
+  }
+}
+
+module.exports = {
+  obtenerEstadoCuenta
+};
+--- FIN ARCHIVO: Controllers\estadoCuentaController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\gastosController.js ---
+const {getGastosByClubIdModel,getGastosByIdModel,createGastosModel,deleteGastosModel,updateGastosModel}=require('../Models/gastos');
+
+const getGastosByClubId = async (req, res) => {
+    const { club_id } = req.params;
+    const gastos = await getGastosByClubIdModel(club_id);
+    res.json(gastos);
+};
+
+const getGastosById = async (req, res) => {
+    const { gastos_id } = req.params;
+    const gastos = await getGastosByIdModel(gastos_id);
+    res.json(gastos);
+};
+
+const createGastos = async (req, res) => {
+    const newGastos = await createGastosModel(req.body);
+    res.status(201).json(newGastos);
+};
+
+const updateGastos = async (req, res) => {
+    const { gastos_id } = req.params;
+    const updatedGastos = await updateGastosModel(gastos_id, req.body);
+    res.json(updatedGastos);
+};
+
+
+const deleteGastos = async (req, res) => {
+    const { gastos_id } = req.params;
+    const result = await deleteGastosModel(gastos_id);
+    res.json(result);
+};
+
+
+module.exports = {
+    getGastosByClubId,
+    getGastosById,
+    createGastos,
+    deleteGastos,
+    updateGastos
+};
+--- FIN ARCHIVO: Controllers\gastosController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\horariosCategoriaController.js ---
+const {
+  getAllHorariosByCategoriaIdModel,
+  createManyHorariosModel,
+  getHorarioByIdModel,
+  createHorarioModel,
+  updateHorarioModel,
+  deleteHorarioModel
+} = require('../Models/horariosCategoria');
+
+const getAllHorariosByCategoriaId = async (req, res) => {
+  try {
+    const { categoria_id } = req.params;
+    const { club_id } = req.auth;
+
+    const horarios = await getAllHorariosByCategoriaIdModel(categoria_id, club_id);
+    res.json(horarios);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+const getHorarioById = async (req, res) => {
+  try {
+    const { horario_id } = req.params;
+    const { club_id } = req.auth;
+
+    const horario = await getHorarioByIdModel(horario_id, club_id);
+    res.json(horario);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+const createHorario = async (req, res) => {
+  try {
+    const { categoria_id } = req.params;
+    const { club_id } = req.auth;
+    const data = req.body;
+
+    const newHorarioId = await createHorarioModel({
+      ...data,
+      categoria_id,
+      club_id
+    });
+
+    res.status(201).json({ id: newHorarioId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+const updateHorario = async (req, res) => {
+  try {
+    const { horario_id } = req.params;
+    const data = req.body;
+
+    await updateHorarioModel(horario_id, data);
+    res.json({ message: 'Horario actualizado correctamente' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+const deleteHorario = async (req, res) => {
+  try {
+    const { horario_id } = req.params;
+
+    await deleteHorarioModel(horario_id);
+    res.json({ message: 'Horario eliminado correctamente' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+const createManyHorarios = async (req, res) => {
+    const { categoria_id } = req.params;
+    const { horarios } = req.body;
+  console.log('Received data for createManyHorarios:', { categoria_id, horarios });
+
+  if (!Array.isArray(horarios) || horarios.length === 0) {
+    return res.status(400).json({ error: 'Horarios inválidos' });
+  }
+
+  const inserted = await createManyHorariosModel({
+    categoria_id,
+    horarios
+  });
+
+  res.status(201).json({
+    message: 'Horarios creados correctamente',
+    inserted
+  });
+};
+
+module.exports = {
+  getAllHorariosByCategoriaId,
+  getHorarioById,
+  createHorario,
+  updateHorario,
+  deleteHorario,
+createManyHorarios
+};
+--- FIN ARCHIVO: Controllers\horariosCategoriaController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\ingresosController.js ---
+const {
+  getAllIngresosByClubModel,
+  createIngresoModel,
+  updateIngresoModel,
+  deleteIngresoModel
+} = require('../Models/ingresos');
+
+const getAllIngresosByClub = async (req, res) => {
+  try {
+    const { club_id } = req.auth;
+    const ingresos = await getAllIngresosByClubModel(club_id);
+    res.json(ingresos);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error interno' });
+  }
+};
+
+const createIngreso = async (req, res) => {
+  try {
+    const { club_id, user_id } = req.auth;
+
+    const ingreso = await createIngresoModel({
+      ...req.body,
+      club_id,
+      creado_por: user_id
+    });
+
+    res.status(201).json(ingreso);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al crear ingreso' });
+  }
+};
+
+const updateIngreso = async (req, res) => {
+  try {
+    const { ingreso_id } = req.params;
+    await updateIngresoModel(ingreso_id, req.body);
+    res.json({ message: 'Ingreso actualizado' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al actualizar ingreso' });
+  }
+};
+
+const deleteIngreso = async (req, res) => {
+  try {
+    const { ingreso_id } = req.params;
+    const ok = await deleteIngresoModel(ingreso_id);
+    if (!ok) return res.status(404).json({ error: 'Ingreso no encontrado' });
+    res.json({ message: 'Ingreso eliminado' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al eliminar ingreso' });
+  }
+};
+
+module.exports = {
+  getAllIngresosByClub,
+  createIngreso,
+  updateIngreso,
+  deleteIngreso
+};
+--- FIN ARCHIVO: Controllers\ingresosController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\invitacionesController.js ---
+const crypto = require('crypto');
+const invitacionesModel = require('../Models/invitaciones');
+
+const createInvitacion = async (req, res) => {
+    console.log('createInvitacion called with body:', req.body);
+    console.log('req.auth:', req.auth);
+    console.log('req.userContext:', req.userContext);   
+  const { club_id } = req.auth;
+  const { email, tipo } = req.body;
+
+  const token = crypto.randomBytes(32).toString('hex');
+
+  await invitacionesModel.createInvitacion({
+    email,
+    club_id,
+    tipo,
+    token
+  });
+
+  res.status(201).json({ message: 'Invitación creada', token });
+};
+
+const listInvitaciones = async (req, res) => {
+  const { club_id } = req.userContext;
+  const invitaciones = await invitacionesModel.listByClub(club_id);
+  res.json(invitaciones);
+};
+
+const validateInvitacion = async (req, res) => {
+    console.log('validateInvitacion called with params:', req.params);
+  const { token } = req.params;
+  const invitacion = await invitacionesModel.getByToken(token);
+  console.log('Found invitacion:', invitacion);
+
+  if (!invitacion) {
+    return res.status(404).json({ error: 'Invitación inválida o expirada' });
+  }
+
+  res.json(invitacion);
+};
+
+const cancelInvitacion = async (req, res) => {
+  const { club_id } = req.userContext;
+  const { invitacion_id } = req.params;
+
+  const ok = await invitacionesModel.cancelInvitacion(invitacion_id, club_id);
+  if (!ok) {
+    return res.status(404).json({ error: 'Invitación no encontrada' });
+  }
+
+  res.json({ message: 'Invitación cancelada' });
+};
+
+module.exports = {
+  createInvitacion,
+  listInvitaciones,
+  validateInvitacion,
+  cancelInvitacion
+};
+--- FIN ARCHIVO: Controllers\invitacionesController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\jugadoresController.js ---
+const {
+  getJugadorEstadoCuentaModel,
+  getJugadorContactoModel,
+  getJugadorDeportivoModel,
+  getPlayersMainCardDataByClubIdModel,
+  getJugadoresByPosicionModel,
+  getJugadoresOrdenadosModel,
+  searchJugadoresModel,
+  getJugadoresByClubModel,
+  getJugadoresByCategoriaModel,
+  getJugadorByIdModel,
+  getMainPlayerCardDataModel,
+  createJugadorModel,
+  updateJugadorModel,
+  deleteJugadorModel
+
+} = require('../Models/jugadores');
+
+const {
+  getPosicionesByJugadorModel,
+  getPosicionPrincipalModel
+} = require('../Models/jugadoresPosiciones');
+
+const getJugadoresByClub = async (req, res) => {
+  const { club_id } = req.auth;
+  const jugadores = await getJugadoresByClubModel(club_id);
+  res.json(jugadores);
+};
+
+
+const searchJugadores = async (req, res) => {
+  console.log('searchJugadores called');
+  console.log('searchJugadores called with query:', req.query);
+  const { q = '' } = req.query;
+  const { club_id } = req.auth;
+
+  if (!q.trim()) return res.json([]);
+
+  const jugadores = await searchJugadoresModel(club_id, q.trim());
+  res.json(jugadores);
+};
+
+const getJugadoresByPosicion = async (req, res) => {
+  const { categoria_posicion } = req.params;
+  const { club_id } = req.auth;
+
+  const jugadores = await getJugadoresByPosicionModel(
+    club_id,
+    categoria_posicion
+  );
+
+  res.json(jugadores);
+};
+
+const getJugadoresOrdenados = async (req, res) => {
+  const { dir = 'ASC' } = req.query;
+  const { club_id } = req.auth;
+
+  const jugadores = await getJugadoresOrdenadosModel(club_id, dir);
+  res.json(jugadores);
+};
+
+
+const getPlayersMainCardsByClub = async (req, res) => {
+  const { club_id } = req.auth;
+
+  const players = await getPlayersMainCardDataByClubIdModel(club_id);
+  res.json(players);
+};
+
+
+const getJugadoresByCategoria = async (req, res) => {
+  const { categoria_id } = req.params;
+  const jugadores = await getJugadoresByCategoriaModel(categoria_id);
+  res.json(jugadores);
+};
+
+const getJugadorById = async (req, res) => {
+  const { jugador_id } = req.params;
+  const jugador = await getJugadorByIdModel(jugador_id);
+  res.json(jugador);
+};
+
+const getJugadorConPosiciones = async (req, res) => {
+  const { jugador_id } = req.params;
+
+  const jugador = await getJugadorByIdModel(jugador_id);
+  const posiciones = await getPosicionesByJugadorModel(jugador_id);
+  const posicion_principal = await getPosicionPrincipalModel(jugador_id);
+
+  res.json({
+    ...jugador,
+    posiciones,
+    posicion_principal
+  });
+};
+
+const getMainPlayerCardData = async (req, res) => {
+  const { jugador_id } = req.params;
+  const jugador = await getMainPlayerCardDataModel(jugador_id);
+  res.status(201).json(jugador);
+}
+
+const createJugador = async (req, res) => {
+  const jugador = await createJugadorModel(req.body);
+  res.status(201).json(jugador);
+};
+
+const updateJugador = async (req, res) => {
+  const { jugador_id } = req.params;
+  const jugador = await updateJugadorModel(jugador_id, req.body);
+  res.json(jugador);
+};
+
+const deleteJugador = async (req, res) => {
+  const { jugador_id } = req.params;
+  const deleted = await deleteJugadorModel(jugador_id);
+  res.json({ deleted });
+};
+
+
+
+async function getJugadorDeportivo(req, res) {
+  try {
+    const { jugador_id } = req.params;
+
+    const data = await getJugadorDeportivoModel(jugador_id);
+    if (!data) {
+      return res.status(404).json({ error: 'Jugador no encontrado' });
+    }
+
+    res.json(data);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener información deportiva' });
+  }
+}
+
+async function getJugadorContacto(req, res) {
+  try {
+    const { jugador_id } = req.params;
+
+    const data = await getJugadorContactoModel(jugador_id);
+
+    if (!data) {
+      return res.status(404).json({
+        error: 'Jugador no encontrado'
+      });
+    }
+
+    res.json(data);
+
+  } catch (error) {
+    console.error('Error getJugadorContacto:', error);
+    res.status(500).json({
+      error: 'Error al obtener contacto del jugador'
+    });
+  }
+}
+
+
+async function getJugadorEstadoCuenta(req, res) {
+  try {
+    console.log('getJugadorEstadoCuenta called');
+    console.log('Params:', req.params);
+    const { jugador_id } = req.params;
+
+    
+    const data = await getJugadorEstadoCuentaModel(jugador_id);
+
+    if (!data) {
+      return res.status(404).json({
+        error: 'Estado de cuenta no encontrado'
+      });
+    }
+
+    res.json(data);
+
+  } catch (error) {
+    console.error('Error estado de cuenta:', error);
+    res.status(500).json({
+      error: 'Error al obtener estado de cuenta'
+    });
+  }
+}
+
+
+
+module.exports = {
+  getJugadorEstadoCuenta,
+  getJugadorContacto,
+  getJugadorDeportivo,
+  getPlayersMainCardsByClub,
+  getJugadoresByPosicion,
+  getJugadoresOrdenados,
+  searchJugadores,
+  getJugadoresByClub,
+  getJugadoresByCategoria,
+  getJugadorById,
+  getMainPlayerCardData,
+  getJugadorConPosiciones,
+  createJugador,
+  updateJugador,
+  deleteJugador
+
+};
+--- FIN ARCHIVO: Controllers\jugadoresController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\jugadoresFinanzasController.js ---
+const {
+  getPlanFinancieroJugador,
+  getEstadoCuentaRaw,
+  getCargosJugador,
+  getUltimosPagosJugador
+} = require('../Models/jugadoresFinanzas');
+
+async function getFinanzasJugador(req, res) {
+  try {
+    const { jugador_id } = req.params;
+
+    /* =========================
+     * 1️⃣ PLAN + DESCUENTOS
+     * ========================= */
+    const planData = await getPlanFinancieroJugador(jugador_id);
+
+    if (!planData) {
+      return res.status(404).json({
+        message: 'Jugador sin configuración financiera'
+      });
+    }
+
+    const plan_base = Number(planData.plan_base);
+    const porcentaje_plan = Number(planData.porcentaje_plan); // % que paga
+    const descuento_personal = Number(planData.descuento_personal);
+
+    // aplicar plan
+    const monto_plan = plan_base * (porcentaje_plan / 100);
+
+    // aplicar descuento personal
+    const monto_final = Math.max(
+      Math.round(monto_plan * (1 - descuento_personal / 100)),
+      0
+    );
+
+    /* =========================
+ * 2️⃣ ESTADO DE CUENTA
+ * ========================= */
+const estadoRaw = await getEstadoCuentaRaw(jugador_id);
+
+const deuda = Number(estadoRaw.deuda);
+const pagado = Number(estadoRaw.pagado);
+
+let estado;
+
+if (deuda === 0) {
+  estado = 'al_dia';
+} else if (pagado > 0) {
+  estado = 'parcial';
+} else {
+  estado = 'pendiente';
+}
+    /* =========================
+     * 3️⃣ CARGOS + PAGOS
+     * ========================= */
+    const cargos = await getCargosJugador(jugador_id);
+    const ultimos_pagos = await getUltimosPagosJugador(jugador_id);
+
+    /* =========================
+     * 4️⃣ RESPUESTA FINAL
+     * ========================= */
+    res.json({
+      plan: {
+        nombre: planData.plan_nombre,
+        plan_base,
+        porcentaje_plan,
+        descuento_personal,
+        monto_final
+      },
+      estado_cuenta: {
+        estado,   // al_dia | parcial | pendiente
+        deuda,
+        pagado
+      },
+      cargos,
+      ultimos_pagos
+    });
+
+  } catch (error) {
+    console.error('❌ Error finanzas jugador:', error);
+    res.status(500).json({
+      message: 'Error al obtener finanzas del jugador'
+    });
+  }
+}
+module.exports = {
+  getFinanzasJugador
+};
+--- FIN ARCHIVO: Controllers\jugadoresFinanzasController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\jugadoresPosicionesController.js ---
+const {
+  createJugadorPosicionModel,
+  createManyJugadorPosicionesModel,
+  deleteJugadorPosicionModel,
+  deleteAllJugadorPosicionesModel
+} = require('../Models/jugadoresPosiciones');
+
+/**
+ * Crear UNA relación
+ */
+const createJugadorPosicion = async (req, res) => {
+  try {
+    const id = await createJugadorPosicionModel(req.body);
+    res.status(201).json({ id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error creando posición del jugador' });
+  }
+};
+
+/**
+ * Crear MUCHAS relaciones
+ */
+const createManyJugadorPosiciones = async (req, res) => {
+  try {
+    const { jugador_id, posiciones } = req.body;
+    await createManyJugadorPosicionesModel(jugador_id, posiciones);
+    res.status(201).json({ created: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error creando posiciones del jugador' });
+  }
+};
+
+/**
+ * Borrar UNA relación
+ */
+const deleteJugadorPosicion = async (req, res) => {
+  try {
+    const { jugador_id, posicion_id } = req.params;
+    const deleted = await deleteJugadorPosicionModel(jugador_id, posicion_id);
+
+    if (!deleted) {
+      return res.status(404).json({ message: 'Relación no encontrada' });
+    }
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error eliminando posición del jugador' });
+  }
+};
+
+/**
+ * Borrar TODAS las posiciones del jugador
+ */
+const deleteAllJugadorPosiciones = async (req, res) => {
+  try {
+    const { jugador_id } = req.params;
+    await deleteAllJugadorPosicionesModel(jugador_id);
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error eliminando posiciones del jugador' });
+  }
+};
+
+module.exports = {
+  createJugadorPosicion,
+  createManyJugadorPosiciones,
+  deleteJugadorPosicion,
+  deleteAllJugadorPosiciones
+};
+
+--- FIN ARCHIVO: Controllers\jugadoresPosicionesController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\jugadoresTutoresController.js ---
+const {
+  getRelacionesByJugadorIdModel,
+  getRelacionesByTutorIdModel,
+  getRelacionByIdsModel
+} = require('../Models/jugadoresTutores');
+
+/**
+ * Relaciones de un jugador
+ */
+const getRelacionesByJugadorId = async (req, res) => {
+  const { id } = req.params;
+  const relaciones = await getRelacionesByJugadorIdModel(id);
+  res.json(relaciones);
+};
+
+/**
+ * Relaciones de un tutor
+ */
+const getRelacionesByTutorId = async (req, res) => {
+  const { id } = req.params;
+  const relaciones = await getRelacionesByTutorIdModel(id);
+  res.json(relaciones);
+};
+
+/**
+ * Relación puntual jugador–tutor
+ */
+const getRelacionByIds = async (req, res) => {
+  const { jugador_id, tutor_id } = req.params;
+
+  const relacion = await getRelacionByIdsModel(jugador_id, tutor_id);
+
+  if (!relacion) {
+    return res.status(404).json({ message: 'Relación no encontrada' });
+  }
+
+  res.json(relacion);
+};
+
+module.exports = {
+  getRelacionesByJugadorId,
+  getRelacionesByTutorId,
+  getRelacionByIds
+};
+
+--- FIN ARCHIVO: Controllers\jugadoresTutoresController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\pagosController.js ---
+const pool = require('../Utils/Pool');
+const {
+  crearIngreso,
+  imputarIngresoACargo,
+  getTotalPagadoCargo,
+  getCargo,
+  actualizarEstadoCargo
+} = require('../Models/pagos');
+
+async function registrarPago(req, res) {
+  const {
+    cargo_jugador_id,
+    monto,
+    metodo_pago,
+    referencia
+  } = req.body;
+console.log('🔍 registrarPago - cargo_jugador_id:', cargo_jugador_id, 'monto:', monto); // Debug log
+console.log('🔍 registrarPago - req.body:', req.body); // Debug lo
+console.log('🔍 registrarPago - req.auth:', req.auth); // Debug log
+  const usuario_id = req.auth.user_id;
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const cargo = await getCargo(conn, cargo_jugador_id);
+    console.log('🔍 registrarPago - cargo obtenido:', cargo); // Debug log
+    if (!cargo) throw new Error('Cargo inexistente');
+
+    const ingreso_id = await crearIngreso(conn, {
+  club_id: cargo.club_id,
+  jugador_id: cargo.jugador_id,
+  cargo_id: cargo.cargo_jugador_id,
+  concepto: cargo.concepto,
+  monto,
+  metodo_pago,
+  referencia,
+  creado_por: usuario_id
+});
+
+    await imputarIngresoACargo(conn, {
+      ingreso_id,
+      cargo_jugador_id,
+      monto_aplicado: monto
+    });
+
+    const totalPagado = await getTotalPagadoCargo(conn, cargo_jugador_id);
+
+    let nuevoEstado = 'pendiente';
+    if (totalPagado >= cargo.monto) nuevoEstado = 'pagado';
+    else if (totalPagado > 0) nuevoEstado = 'parcial';
+
+    await actualizarEstadoCargo(conn, cargo_jugador_id, nuevoEstado);
+
+    await conn.commit();
+
+    res.json({ ok: true, ingreso_id, estado_cargo: nuevoEstado });
+
+  } catch (err) {
+    console.log('Error en registrarPago:', err); // Debug log
+    await conn.rollback();
+    res.status(500).json({ message: err.message });
+  } finally {
+    conn.release();
+  }
+}
+
+module.exports = {
+  registrarPago
+};
+--- FIN ARCHIVO: Controllers\pagosController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\personalCategoriaController.js ---
+const {
+  getCategoriasByUsuarioModel,
+  getUsuariosByCategoriaModel,
+  createCategoriaUsuarioModel,
+  updatePersonalCategoriaModel,
+  deletePersonalCategoriaModel
+} = require('../Models/personalCategoria');
+
+const { getPersonalDeportivoByClubModel } = require('../Models/usuariosClubes');
+
+/* ===============================
+   GET personal deportivo del club
+   (para asignar a categoria)
+================================ */
+const getPersonalByClub = async (req, res) => {
+  try {
+    const { club_id } = req.auth;
+
+    const personal = await getPersonalDeportivoByClubModel(club_id);
+    res.json(personal);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+
+/* ===============================
+   GET categorias por usuario
+================================ */
+const getCategoriasByUsuario = async (req, res) => {
+  try {
+    const { user_id } = req.params;
+    const { club_id } = req.auth;
+
+    const categorias = await getCategoriasByUsuarioModel(user_id, club_id);
+    res.json(categorias);
+  } catch (error) {
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* ===============================
+   GET usuarios por categoria
+================================ */
+const getUsuariosByCategoria = async (req, res) => {
+  try {
+    const { categoria_id } = req.params;
+    const { club_id } = req.auth;
+
+    const usuarios = await getUsuariosByCategoriaModel(categoria_id, club_id);
+    res.json(usuarios);
+  } catch (error) {
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* ===============================
+   CREATE
+================================ */
+const createCategoriaUsuario = async (req, res) => {
+  try {
+    console.log("reqBody recibido",req.body);
+    console.log(req.auth);
+    const { categoria_id, user_id, role } = req.body;
+    const { club_id } = req.auth;
+
+    const created = await createCategoriaUsuarioModel({
+      categoria_id,
+      user_id,
+      club_id,
+      role
+    });
+
+    if (created === null) {
+      return res.status(403).json({ error: 'El usuario no pertenece al club' });
+    }
+
+    if (created === false) {
+      return res.status(409).json({ error: 'Ya existe la asignación' });
+    }
+
+    res.status(201).json(created);
+  } catch (error) {
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* ===============================
+   UPDATE ROLE
+================================ */
+const updatePersonalCategoria = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    const ok = await updatePersonalCategoriaModel(id, role);
+
+    if (!ok) {
+      return res.status(404).json({ error: 'Asignación no encontrada' });
+    }
+
+    res.json({ message: 'Rol actualizado' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* ===============================
+   DELETE
+================================ */
+const deletePersonalCategoria = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deleted = await deletePersonalCategoriaModel(id);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Asignación no encontrada' });
+    }
+
+    res.json({ message: 'Asignación eliminada' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+module.exports = {
+  getCategoriasByUsuario,
+  getUsuariosByCategoria,
+  getPersonalByClub,
+  createCategoriaUsuario,
+  updatePersonalCategoria,
+  deletePersonalCategoria
+};
+--- FIN ARCHIVO: Controllers\personalCategoriaController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\planesAfiliacionController.js ---
+const {
+  getAllPlanesByClubModel,
+  getPlanByIdModel,
+  createPlanModel,
+  updatePlanModel,
+  deletePlanModel
+} = require('../Models/planesAfiliacion');
+
+/* ===============================
+   GET all
+================================ */
+const getAllPlanes = async (req, res) => {
+  const { club_id } = req.auth;
+  const planes = await getAllPlanesByClubModel(club_id);
+  res.json(planes);
+};
+
+/* ===============================
+   GET by ID
+================================ */
+const getPlanById = async (req, res) => {
+  const { club_id } = req.auth;
+  const { id } = req.params;
+
+  const plan = await getPlanByIdModel(id, club_id);
+  if (!plan) {
+    return res.status(404).json({ message: 'Plan no encontrado' });
+  }
+
+  res.json(plan);
+};
+
+/* ===============================
+   CREATE
+================================ */
+const createPlan = async (req, res) => {
+  const { club_id } = req.auth;
+  const {
+    nombre,
+    descripcion,
+    porcentaje_aplicado,
+    es_plan_base = 0
+  } = req.body;
+
+  // Validar porcentaje
+  if (porcentaje_aplicado < 0 || porcentaje_aplicado > 100) {
+    return res.status(400).json({
+      message: 'El porcentaje debe estar entre 0 y 100'
+    });
+  }
+
+  // 🔒 Regla: solo un plan base por club
+  if (es_plan_base) {
+    const alreadyExists = await existsPlanBaseByClubModel(club_id);
+
+    if (alreadyExists) {
+      return res.status(409).json({
+        message: 'El club ya tiene un plan base'
+      });
+    }
+  }
+
+  const id = await createPlanModel({
+    club_id,
+    nombre,
+    descripcion,
+    porcentaje_aplicado,
+    es_plan_base
+  });
+
+  res.status(201).json({ plan_afiliacion_id: id });
+};
+
+/* ===============================
+   UPDATE
+================================ */
+const updatePlan = async (req, res) => {
+  const { club_id } = req.auth;
+  const { id } = req.params;
+
+  const plan = await getPlanByIdModel(id, club_id);
+  if (!plan) {
+    return res.status(404).json({ message: 'Plan no encontrado' });
+  }
+
+  if (plan.es_plan_base) {
+    return res.status(403).json({
+      message: 'El plan base no puede modificarse desde aquí'
+    });
+  }
+
+  await updatePlanModel(id, club_id, req.body);
+  res.json({ message: 'Plan actualizado' });
+};
+
+/* ===============================
+   DELETE
+================================ */
+const deletePlan = async (req, res) => {
+  const { club_id } = req.auth;
+  const { id } = req.params;
+
+  const plan = await getPlanByIdModel(id, club_id);
+  if (!plan) {
+    return res.status(404).json({ message: 'Plan no encontrado' });
+  }
+
+  if (plan.es_plan_base) {
+    return res.status(403).json({
+      message: 'El plan base no puede eliminarse'
+    });
+  }
+
+  await deletePlanModel(id, club_id);
+  res.json({ message: 'Plan desactivado' });
+};
+
+module.exports = {
+  getAllPlanes,
+  getPlanById,
+  createPlan,
+  updatePlan,
+  deletePlan
+};
+--- FIN ARCHIVO: Controllers\planesAfiliacionController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\torneoCategoriaController.js ---
+const { inscribirCategoriaModel, getCategoriasByTorneoModel, getTorneosByCategoriaModel, deleteRelacionModel} =require ('../Models/torneoCategorias');
+
+const inscribirCategoria = async (req, res) => {
+  try {
+    const {payload} = req.body;
+    const result = await inscribirCategoriaModel(payload);
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+const getCategoriasByTorneo = async (req, res) => {
+  try {
+    const { torneo_id } = req.params;
+    const result = await getCategoriasByTorneoModel(torneo_id);
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+const getTorneosByCategoria = async (req, res) => {
+  try {
+    const { categoria_id } = req.params;
+    const result = await getTorneosByCategoriaModel(categoria_id);
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+
+const deleteRelacion = async (req, res) => {
+  try {
+    const { torneo_categoria_id } = req.params;
+    const result = await deleteRelacionModel(torneo_categoria_id);
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+
+module.exports = {
+  inscribirCategoria,
+  getCategoriasByTorneo,
+  getTorneosByCategoria,
+  deleteRelacion
+};
+
+--- FIN ARCHIVO: Controllers\torneoCategoriaController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\torneosController.js ---
+const {
+  getTorneosByClubModel,
+  getTorneoByIdModel,
+  createTorneoModel,
+  updateTorneoModel,
+  deleteTorneoModel
+  } = require('../Models/torneos');
+
+const {
+  addCategoriaToTorneoModel,
+  getCategoriasByTorneoModel,
+  removeCategoriaFromTorneoModel,
+  getTorneosByCategoriaModel
+} = require('../Models/torneoCategorias');
+
+const getTorneosByClub = async (req, res) => {
+  const { club_id } = req.auth;
+  const torneos = await getTorneosByClubModel(club_id);
+  res.json(torneos);
+};
+
+const getTorneosByCategoria = async (req, res) => {
+    const { categoria_id } = req.params;
+    const torneos = await getTorneosByCategoriaModel(categoria_id);
+    res.json(torneos);
+  };
+
+const getTorneoById = async (req, res) => {
+  const { club_id } = req.auth;
+  const { torneo_id } = req.params;
+
+  const torneo = await getTorneoByIdModel(torneo_id, club_id);
+  if (!torneo) {
+    return res.status(404).json({ message: 'Torneo no encontrado' });
+  }
+
+  res.json(torneo);
+};
+
+const createTorneo = async (req, res) => {
+  const { club_id } = req.auth;
+  const torneo = await createTorneoModel({ ...req.body, club_id });
+  res.status(201).json(torneo);
+};
+
+const updateTorneo = async (req, res) => {
+  const { club_id } = req.auth;
+  const { torneo_id } = req.params;
+
+  await updateTorneoModel(torneo_id, club_id, req.body);
+  res.json({ message: 'Torneo actualizado' });
+};
+
+const deleteTorneo = async (req, res) => {
+  const { club_id } = req.auth;
+  const { torneo_id } = req.params;
+
+  await deleteTorneoModel(torneo_id, club_id);
+  res.json({ message: 'Torneo eliminado' });
+};
+
+/* === Categorías por torneo === */
+
+const addCategoriaToTorneo = async (req, res) => {
+  const { torneo_id, categoria_id } = req.body;
+  await addCategoriaToTorneoModel(torneo_id, categoria_id);
+  res.status(201).json({ message: 'Categoría vinculada al torneo' });
+};
+
+const getCategoriasByTorneo = async (req, res) => {
+  const { torneo_id } = req.params;
+  const categorias = await getCategoriasByTorneoModel(torneo_id);
+  res.json(categorias);
+};
+
+const removeCategoriaFromTorneo = async (req, res) => {
+  const { torneo_id, categoria_id } = req.params;
+  await removeCategoriaFromTorneoModel(torneo_id, categoria_id);
+  res.json({ message: 'Categoría desvinculada del torneo' });
+};
+
+module.exports = {
+    getTorneosByClub,
+    getTorneoById,
+    getTorneosByCategoria,
+    createTorneo,
+    updateTorneo,
+    deleteTorneo,
+    addCategoriaToTorneo,
+    getCategoriasByTorneo,
+    removeCategoriaFromTorneo
+};
+--- FIN ARCHIVO: Controllers\torneosController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\tutoresController.js ---
+const {
+  getTutorByDniModel,
+  getTutorByIdModel,
+  getTutoresByJugadorIdModel,
+  createTutorModel,
+  linkTutorJugadorModel,
+  updateTutorModel,
+  deleteTutorModel
+} = require('../Models/tutores');
+
+/**
+ * Buscar tutor por DNI (autocompletar formulario)
+ */
+const getTutorByDni = async (req, res) => {
+  const { dni } = req.params;
+  const { club_id } = req.auth; // asumido desde middleware auth
+
+  const tutor = await getTutorByDniModel(club_id, dni);
+
+  if (!tutor) {
+    return res.status(404).json({ exists: false });
+  }
+
+  res.json({ exists: true, tutor });
+};
+
+/**
+ * Obtener tutor por ID
+ */
+const getTutorById = async (req, res) => {
+  const tutor = await getTutorByIdModel(req.params.id);
+  if (!tutor) return res.status(404).json({ message: 'Tutor not found' });
+  res.json(tutor);
+};
+
+/**
+ * Obtener tutores de un jugador
+ */
+const getTutoresByJugadorId = async (req, res) => {
+  const tutores = await getTutoresByJugadorIdModel(req.params.id);
+  res.json(tutores);
+};
+
+/**
+ * Crear tutor y vincularlo a jugador
+ */
+const createTutor = async (req, res) => {
+  const { jugador_id, parentesco, ...tutorData } = req.body;
+
+  
+  tutorData.club_id = req.auth.club_id;
+
+  const newTutor = await createTutorModel(tutorData);
+
+  await linkTutorJugadorModel({
+    jugador_id,
+    tutor_id: newTutor.tutor_id,
+    parentesco
+  });
+
+  res.status(201).json(newTutor);
+};
+
+/**
+ * Vincular tutor existente a jugador
+ */
+const linkTutorJugador = async (req, res) => {
+  const { jugador_id, tutor_id, parentesco } = req.body;
+
+  await linkTutorJugadorModel({ jugador_id, tutor_id, parentesco });
+
+  res.status(201).json({ linked: true });
+};
+
+const updateTutor = async (req, res) => {
+  const tutor = await updateTutorModel(req.params.id, req.body);
+  if (!tutor) return res.status(404).json({ message: 'Tutor not found' });
+  res.json(tutor);
+};
+
+const deleteTutor = async (req, res) => {
+  const deleted = await deleteTutorModel(req.params.id);
+  if (!deleted) return res.status(404).json({ message: 'Tutor not found' });
+  res.json({ deleted: true });
+};
+
+
+module.exports = {
+  getTutorByDni,
+  getTutorById,
+  getTutoresByJugadorId,
+  createTutor,
+  linkTutorJugador,
+  updateTutor,
+  deleteTutor
+};
+--- FIN ARCHIVO: Controllers\tutoresController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\usuariosClubesController.js ---
+const clubUsersModel = require("../Models/usuariosClubes");
+
+const VALID_ROLES = ["admin", "colaborador", "administrativo", "deportivo"];
+
+/* ===============================
+   LISTAR USUARIOS DEL CLUB
+================================ */
+const listClubUsers = async (req, res) => {
+  try {
+    const { club_id } = req.auth;
+
+    const users = await clubUsersModel.getUsuariosByClubModel(club_id);
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: "Error al listar usuarios del club" });
+  }
+};
+
+/* ===============================
+   ASIGNAR USUARIO AL CLUB
+================================ */
+const createClubUser = async (req, res) => {
+  try {
+    const { club_id } = req.auth;
+    const { user_id, tipo } = req.body;
+
+    if (!user_id || !VALID_ROLES.includes(tipo)) {
+      return res.status(400).json({ error: "Datos inválidos" });
+    }
+
+    const result = await clubUsersModel.assignUserToClub(
+      user_id,
+      club_id,
+      tipo
+    );
+
+    res.status(result.status).json({ message: result.message });
+  } catch (error) {
+    res.status(500).json({ error: "Error al asignar usuario" });
+  }
+};
+
+/* ===============================
+   ACTUALIZAR ROL
+================================ */
+const updateRoleClubUser = async (req, res) => {
+  try {
+    const { club_id } = req.auth;
+    const { usuario_club_id } = req.params;
+    const { tipo } = req.body;
+
+    if (!VALID_ROLES.includes(tipo)) {
+      return res.status(400).json({ error: "Rol inválido" });
+    }
+
+    const updated = await clubUsersModel.updateRole(
+      usuario_club_id,
+      club_id,
+      tipo
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: "Relación no encontrada" });
+    }
+
+    res.json({ message: "Rol actualizado" });
+  } catch (error) {
+    res.status(500).json({ error: "Error al actualizar rol" });
+  }
+};
+
+/* ===============================
+   DESACTIVAR USUARIO
+================================ */
+const removeClubUser = async (req, res) => {
+  try {
+    const { club_id } = req.auth;
+    const { usuario_club_id } = req.params;
+
+    const removed = await clubUsersModel.deactivate(
+      usuario_club_id,
+      club_id
+    );
+
+    if (!removed) {
+      return res.status(404).json({ error: "Relación no encontrada" });
+    }
+
+    res.json({ message: "Usuario removido del club" });
+  } catch (error) {
+    res.status(500).json({ error: "Error al remover usuario" });
+  }
+};
+
+const { getUserClubContextModel } = require("../Models/usuarioClubContext");
+ const getMyClubContext = async (req, res) => {
+  try {
+    console.log("entrando a controller getMyClubContext");
+    const { user_id, club_id } = req.auth;
+
+    const context = await getUserClubContextModel(user_id, club_id);
+    console.log('User club context:', context);
+    if (!context) {
+      return res.status(403).json({
+        message: 'El usuario no pertenece a este club'
+      });
+    }
+    console.log("saliendo bien del controller getMyClubContext");
+    console.log(user_id, club_id, context.tipo);
+    res.json({
+      user_id,
+      club_id,
+      tipo: context.tipo
+    });
+
+  } catch (error) {
+    console.error('getMyClubContext error:', error);
+    res.status(500).json({ message: 'Error interno del servidor' });
+  }
+};
+
+module.exports = {
+  getMyClubContext,
+  listClubUsers,
+  createClubUser,
+  updateRoleClubUser,
+  removeClubUser
+};
+
+--- FIN ARCHIVO: Controllers\usuariosClubesController.js ---
+
+
+--- INICIO ARCHIVO: Controllers\usuariosController.js ---
+const {
+  getAllUsersModel,
+  getUserByIdModel,
+  createUserModel,
+  updateUserModel,
+  updateUserMailModel,
+  updateUserPasswordModel,
+  deleteUserModel,
+  getUserByClubIdModel,
+} = require('../Models/usuarios');
+
+
+const getAllUsers = async (req, res) => {
+  const users = await getAllUsersModel();
+  res.json(users);
+};
+
+const getUserById = async (req, res) => {
+  console.log('Entering getUserById controller');
+  console.log('req.auth:', req.auth);
+  const data = req.auth ;
+  console.log('user data in controller:', data);
+  const user = await getUserByIdModel(data.userId);
+
+  
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  
+  
+  const {password,...safeUser} = user
+  console.log('safe user:', user);
+  res.json(user);
+};
+const getUsersByClubId = async (req, res) => {
+  const { club_id } = req.params;
+  const users = await getUserByClubIdModel(club_id);
+  res.json(users);
+};
+
+const createUser = async (req, res) => {
+  const userData = req.body;
+  const newUser = await createUserModel(userData);
+  res.status(201).json(newUser);
+};
+
+const updateUser = async (req, res) => {
+  const { id } = req.params;
+  const userData = req.body;
+  const updatedUser = await updateUserModel(id, userData);
+  if (updatedUser) {
+    res.json(updatedUser);
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+};
+
+const updateUserPassword = async (req, res) => {
+  const { id } = req.params;
+  const { newPassword } = req.body;
+  const updatedUser = await updateUserPasswordModel(id, newPassword);
+  if (updatedUser) {
+    res.json(updatedUser);
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+};
+
+const updateUserMail = async (req, res) => {
+  const { id } = req.params;
+  const { newEmail } = req.body;
+  const updatedUser = await updateUserMailModel(id, newEmail);
+  if (updatedUser) {
+    res.json(updatedUser);
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+};
+
+const deleteUser = async (req, res) => {
+  const { id } = req.params;
+  const result = await deleteUserModel(id);
+  if (result.ok) {
+    res.json({ message: 'User deleted successfully' });
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+};
+
+module.exports = {
+    getAllUsers,
+    getUserById,
+    createUser,
+    updateUser,
+    updateUserPassword,
+    updateUserMail,
+    deleteUser,
+    getUsersByClubId
+};
+--- FIN ARCHIVO: Controllers\usuariosController.js ---
+
+
+--- INICIO ARCHIVO: Middlewares\authContext.js ---
+const { getUserByIdModel } = require("../Models/user");
+
+const userContext = async (req, res, next) => {
+  
+  
+  try {
+    const user = await getUserByIdModel(req.userData.userId);
+    
+
+    if (!user) {
+      return res.status(401).json({ error: "Usuario inexistente" });
+    }
+    
+    req.userData.club_id = user.club_id;
+    req.userData.role = user.role;
+
+    return next();
+  } catch (error) {
+    return res.status(500).json({ error: "Error cargando contexto de usuario" });
+  }
+};
+
+module.exports = userContext;
+--- FIN ARCHIVO: Middlewares\authContext.js ---
+
+
+--- INICIO ARCHIVO: Middlewares\authExtraction.js ---
+const { verifyTokenOnly } = require("../Services/authService");
+
+const authExtraction = async (req, res, next) => {
+  const authToken = req.cookies.authToken;
+  
+
+  if (!authToken) {
+    return res.status(401).json({ error: "No hay token" });
+  }
+
+  const { valid, payload } = await verifyTokenOnly(authToken);
+  
+
+  if (!valid) {
+    return res.status(401).json({ error: "Token no válido" });
+  }
+
+  // payload ya trae: userId, clubId
+  req.auth = {
+    user_id: payload.user_id,
+    club_id: payload.club_id
+  };
+  
+
+  next();
+};
+
+module.exports = { authExtraction };
+--- FIN ARCHIVO: Middlewares\authExtraction.js ---
+
+
+--- INICIO ARCHIVO: Middlewares\idFormSubdomain.js ---
+
+module.exports = (req, res, next) => {
+  const host = req.headers.host; // ejemplo: "club1.miservicio.com:3000"
+  const baseDomain = process.env.BASE_DOMAIN || 'miservicio.com';
+
+  if (host.endsWith(baseDomain)) {
+    const subdomainPart = host.replace(`.${baseDomain}`, '').split(':')[0];
+    if (subdomainPart && subdomainPart !== 'www') {
+      const clubId = parseInt(subdomainPart.replace(/\D/g, ''), 10); // extrae número si es club1, club2, etc.
+      if (!isNaN(clubId)) {
+        req.clubId = clubId;
+      }
+    }
+  }
+  next();
+};
+
+--- FIN ARCHIVO: Middlewares\idFormSubdomain.js ---
+
+
+--- INICIO ARCHIVO: Middlewares\requireRole.js ---
+const requireRole = (allowedRoles = []) => {
+  return (req, res, next) => {
+    console.log('requireRole middleware triggered');
+    console.log('req.tipo:', req.tipo);
+    try {
+      const { tipo } = req;
+
+      if (!tipo) {
+        return res.status(401).json({
+          message: 'Rol no encontrado en el contexto'
+        });
+      }
+
+      if (!allowedRoles.includes(tipo)) {
+        return res.status(403).json({
+          message: 'No tiene permisos para esta acción'
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('requireRole error:', error);
+      res.status(500).json({ message: 'Error interno del servidor' });
+    }
+  };
+};
+module.exports = { requireRole };
+--- FIN ARCHIVO: Middlewares\requireRole.js ---
+
+
+--- INICIO ARCHIVO: Middlewares\userContext.js ---
+const { getUserClubContextModel } = require("../Models/usuarioClubContext");
+
+const userContext = async (req, res, next) => {
+  console.log('--- userContext Middleware ---');
+  console.log('userContext middleware triggered');
+  console.log('req.auth:', req.auth);
+  
+  try {
+    const { user_id, club_id } = req.auth;
+    const context = await getUserClubContextModel(user_id, club_id);
+
+    if (!context) {
+      return res.status(403).json({
+        message: 'El usuario no pertenece al club'
+      });
+    }
+
+    req.tipo = context.tipo;
+
+    next();
+  } catch (error) {
+    console.error('userContext error:', error);
+    res.status(500).json({ message: 'Error interno del servidor' });
+  }
+};
+module.exports = { userContext };
+--- FIN ARCHIVO: Middlewares\userContext.js ---
+
+
+--- INICIO ARCHIVO: Models\asistencias.js ---
+const pool = require('../Utils/Pool');
+
+/* =========================
+   CRUD
+========================= */
+
+const createAsistenciasModel = async ({ entrenamiento_id, jugadores, fecha }) => {
+  for (const jugador_id of jugadores) {
+    await pool.query(`
+      INSERT INTO asistencias_entrenamiento (jugador_id, entrenamiento_id, fecha)
+      VALUES (?, ?, ?)
+    `, [jugador_id, entrenamiento_id, fecha]);
+  }
+};
+
+const getAsistenciasByEntrenamientoModel = async (entrenamiento_id) => {
+  const [rows] = await pool.query(`
+    SELECT ae.*, j.nombre
+    FROM asistencias_entrenamiento ae
+    JOIN jugadores j ON j.jugador_id = ae.jugador_id
+    WHERE ae.entrenamiento_id = ?
+  `, [entrenamiento_id]);
+
+  return rows;
+};
+
+/* =========================
+   MÉTRICA CLAVE
+========================= */
+
+/**
+ * Presencias por jugador en una categoría
+ */
+const getPresenciasByJugadorCategoriaModel = async (jugador_id, categoria_id) => {
+  const [rows] = await pool.query(`
+    SELECT COUNT(*) AS presencias
+    FROM asistencias_entrenamiento ae
+    JOIN entrenamientos e ON e.entrenamiento_id = ae.entrenamiento_id
+    WHERE ae.jugador_id = ?
+      AND e.categoria_id = ?
+  `, [jugador_id, categoria_id]);
+
+  return rows[0].presencias;
+};
+
+module.exports = {
+  createAsistenciasModel,
+  getAsistenciasByEntrenamientoModel,
+  getPresenciasByJugadorCategoriaModel
+};
+--- FIN ARCHIVO: Models\asistencias.js ---
+
+
+--- INICIO ARCHIVO: Models\cargos.js ---
+const pool = require('../Utils/Pool');
+
+/* ===============================
+   LISTAR CARGOS POR JUGADOR
+================================ */
+const getCargosByJugadorModel = async (jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT *
+    FROM cargos_jugadores
+    WHERE jugador_id = ?
+    ORDER BY creado_en DESC
+  `, [jugador_id]);
+
+  return rows;
+};
+
+/* ===============================
+   LISTAR CARGOS POR CLUB
+================================ */
+const getCargosByClubModel = async (club_id) => {
+  const [rows] = await pool.query(`
+    SELECT cj.*, j.nombre AS jugador_nombre
+    FROM cargos_jugadores cj
+    JOIN jugadores j ON j.jugador_id = cj.jugador_id
+    JOIN categorias c ON c.categoria_id = j.categoria_id
+    WHERE c.club_id = ?
+    ORDER BY cj.creado_en DESC
+  `, [club_id]);
+
+  return rows;
+};
+
+/* ===============================
+   CREAR CARGO
+================================ */
+const createCargoModel = async (data) => {
+  const {
+    jugador_id,
+    concepto_id,
+    ciclo_id,
+    monto,
+    cuota_numero = null,
+    cuotas_totales = null,
+    estado = 'pendiente'
+  } = data;
+
+  const [res] = await pool.query(`
+    INSERT INTO cargos_jugadores
+      (jugador_id, concepto_id, ciclo_id, monto,
+       cuota_numero, cuotas_totales, estado)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `, [
+    jugador_id,
+    concepto_id,
+    ciclo_id,
+    monto,
+    cuota_numero,
+    cuotas_totales,
+    estado
+  ]);
+
+  return { cargo_id: res.insertId };
+};
+
+/* ===============================
+   ACTUALIZAR ESTADO CARGO
+================================ */
+const updateCargoEstadoModel = async (cargo_id, estado) => {
+  const [res] = await pool.query(`
+    UPDATE cargos_jugadores
+    SET estado = ?
+    WHERE cargo_id = ?
+  `, [estado, cargo_id]);
+
+  return res.affectedRows > 0;
+};
+
+/* ===============================
+   ELIMINAR CARGO (SOFT)
+================================ */
+const deleteCargoModel = async (cargo_id) => {
+  const [res] = await pool.query(`
+    UPDATE cargos_jugadores
+    SET estado = 'anulado'
+    WHERE cargo_id = ?
+  `, [cargo_id]);
+
+  return res.affectedRows > 0;
+};
+
+/* ===============================
+  OBTENER CARGO POR ID
+================================ */
+const getCargoByIdModel = async (cargo_jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      cj.cargo_jugador_id,
+      cj.jugador_id,
+      j.nombre AS jugador_nombre,
+      cj.monto AS monto_original,
+      IFNULL(p.total_pagado, 0) AS pagado_total,
+      (cj.monto - IFNULL(p.total_pagado, 0)) AS saldo_pendiente,
+      cj.estado,
+      cj.creado_en,
+      cf.nombre_default AS concepto
+
+    FROM cargos_jugadores cj
+
+    JOIN conceptos_facturacion cf
+      ON cf.concepto_id = cj.concepto_id
+    JOIN jugadores j
+      ON j.jugador_id = cj.jugador_id
+    JOIN categorias c
+      ON c.categoria_id = j.categoria_id
+    LEFT JOIN (
+      SELECT
+        cargo_jugador_id,
+        SUM(monto_aplicado) AS total_pagado
+      FROM ingresos_cargos
+      GROUP BY cargo_jugador_id
+    ) p ON p.cargo_jugador_id = cj.cargo_jugador_id
+
+    WHERE cj.cargo_jugador_id = ?
+  `, [cargo_jugador_id]);
+
+  return rows[0];
+};
+
+module.exports = {
+  getCargoByIdModel,
+  getCargosByJugadorModel,
+  getCargosByClubModel,
+  createCargoModel,
+  updateCargoEstadoModel,
+  deleteCargoModel
+};
+--- FIN ARCHIVO: Models\cargos.js ---
+
+
+--- INICIO ARCHIVO: Models\categorias.js ---
+const pool = require('../Utils/Pool');
+
+
+const getAllModel = async (club_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      c.categoria_id,
+      c.nombre AS nombre,
+      c.profesor,
+      c.genero,
+      club.nombre AS club,
+      GROUP_CONCAT(
+        CONCAT(h.dia_semana, ' ', h.hora_inicio)
+        ORDER BY
+          FIELD(
+            h.dia_semana,
+            'lunes','martes','miercoles','jueves','viernes','sabado','domingo'
+          ),
+          h.hora_inicio
+        SEPARATOR ', '
+      ) AS entrenamientos,
+      COALESCE(j.jugadores, 0) AS jugadores,
+      COALESCE(t.torneos, 0) AS torneos
+
+    FROM categorias c
+    JOIN clubes club
+      ON club.club_id = c.club_id
+    LEFT JOIN horarios_entrenamiento h
+      ON h.categoria_id = c.categoria_id
+    LEFT JOIN (
+      SELECT categoria_id, COUNT(*) AS jugadores
+      FROM jugadores
+      GROUP BY categoria_id
+    ) j
+      ON j.categoria_id = c.categoria_id
+    LEFT JOIN (
+      SELECT categoria_id, COUNT(*) AS torneos
+      FROM torneos_categorias
+      GROUP BY categoria_id
+    ) t
+      ON t.categoria_id = c.categoria_id
+    WHERE c.club_id = ?
+    GROUP BY
+      c.categoria_id,
+      c.nombre,
+      c.profesor,
+      c.genero,
+      club.nombre
+  `, [club_id]);
+
+  return rows;
+};
+
+
+// CREAR CATEGORIA RELACIONADA A UN CLUB
+const createCategoryModel = async (data) => {
+  const { nombre, profesor, genero, club_id } = data;
+  console.log("data recibida", data);
+  const [result] = await pool.query(`INSERT INTO categorias (nombre, profesor, genero, club_id)
+                                      VALUES (?, ?, ?, ?)`, [nombre, profesor, genero, club_id]);
+  return result.insertId;
+}
+
+
+// MODIFICAR CATEGORIA SELECCIONADA (NO REQUIERE CLUB_ID YA QUE SE USA EL ID DE CATEGORIA QUE ESTA VINCULADO MEDIANTE FK A CLUB_ID)
+const updateCategoryModel = async (id, data) => {
+  const { nombre, profesor, horarios } = data;
+  const [result] = await pool.query(`UPDATE categorias
+                                      SET nombre = ?, profesor = ?, horarios = ?
+                                      WHERE categoria_id = ?`, [nombre, profesor, horarios, id]);
+  return result.affectedRows;
+}
+
+//ELIMINA LA CATEGORIA SELECCIONADA (MISMA EXPLICACION QUE PARA MODIFICAR)
+const deleteCategoryModel = async (id) => {
+  const [result] = await pool.query(`DELETE FROM categorias WHERE categoria_id = ?`, [id]);
+  return result.affectedRows;
+}
+
+module.exports = { getAllModel, createCategoryModel, updateCategoryModel, deleteCategoryModel };
+
+--- FIN ARCHIVO: Models\categorias.js ---
+
+
+--- INICIO ARCHIVO: Models\clientes.js ---
+const pool = require('../Utils/Pool');
+
+const getAllClientesModel = async () => {
+  const [rows] = await pool.query(`SELECT * FROM clientes`);
+  return rows;
+};
+
+const getClienteByIdModel = async (cliente_id) => {
+  const [rows] = await pool.query(
+    `SELECT * FROM clientes WHERE cliente_id = ?`,
+    [cliente_id]
+  );
+  return rows[0] || null;
+};
+
+const createClienteModel = async (data) => {
+  const { nombre, email, telefono, plan } = data;
+  const [res] = await pool.query(`
+    INSERT INTO clientes (nombre, email, telefono, plan, estado)
+    VALUES (?, ?, ?, ?, 'activo')
+  `, [nombre, email, telefono, plan]);
+  return { cliente_id: res.insertId, ...data };
+};
+
+const updateClienteModel = async (cliente_id, data) => {
+  const { nombre, email, telefono, plan, estado } = data;
+  await pool.query(`
+    UPDATE clientes
+    SET nombre = ?, email = ?, telefono = ?, plan = ?, estado = ?
+    WHERE cliente_id = ?
+  `, [nombre, email, telefono, plan, estado, cliente_id]);
+  return getClienteByIdModel(cliente_id);
+};
+
+const deleteClienteModel = async (cliente_id) => {
+  const [res] = await pool.query(
+    `DELETE FROM clientes WHERE cliente_id = ?`,
+    [cliente_id]
+  );
+  return res.affectedRows > 0;
+};
+
+module.exports = {
+  getAllClientesModel,
+  getClienteByIdModel,
+  createClienteModel,
+  updateClienteModel,
+  deleteClienteModel
+};
+--- FIN ARCHIVO: Models\clientes.js ---
+
+
+--- INICIO ARCHIVO: Models\clubes.js ---
+const pool = require('../Utils/Pool');
+
+
+
+  // Detallado: clubes con su cliente
+  const getAllClubsModel = async () => {
+    const [rows] = await pool.query(`
+      SELECT cl.*, cli.nombre AS cliente_nombre, cli.email AS cliente_email
+      FROM clubes cl
+      JOIN clientes cli ON cli.cliente_id = cl.cliente_id
+      ORDER BY cl.club_id DESC
+    `);
+    return rows;
+  }
+
+  const getByClienteIdModel = async (cliente_id) =>{
+    const [rows] = await pool.query(`SELECT * FROM clubes WHERE cliente_id = ? ORDER BY club_id DESC`, [cliente_id]);
+    return rows;
+  }
+
+  const getClubByIdModel = async (club_id) => {
+    const [rows] = await pool.query(`SELECT * FROM clubes WHERE club_id = ?`, [club_id]);
+    return rows[0] || null;
+  }
+
+
+  const createClubModel = async (clubData) => {
+    const { nombre, cliente_id, direccion, estado, fecha_alta } = clubData;
+    const [result] = await pool.query(
+      `INSERT INTO clubes (nombre, cliente_id, direccion, estado, fecha_alta) VALUES (?, ?, ?, ?, ?)`,
+      [nombre, cliente_id, direccion, estado, fecha_alta]
+    );
+    return { club_id: result.insertId, ...clubData };
+  };
+  const updateClubModel = async (club_id, clubData) => {
+    const { nombre, cliente_id, direccion, estado } = clubData;
+    await pool.query(
+      `UPDATE clubes SET nombre = ?, cliente_id = ?, direccion = ?, estado = ? WHERE club_id = ?`,
+      [nombre, cliente_id, direccion, estado, club_id]
+    );
+    return { club_id, ...clubData };
+  };
+
+  const deleteClubModel = async (club_id) => {
+    const [result] = await pool.query(`DELETE FROM clubes WHERE club_id = ?`, [club_id]);
+    return result.affectedRows;
+  };
+
+module.exports = { getClubByIdModel, getAllClubsModel, getByClienteIdModel, createClubModel, updateClubModel, deleteClubModel};
+
+
+
+--- FIN ARCHIVO: Models\clubes.js ---
+
+
+--- INICIO ARCHIVO: Models\descuentosJugadores.js ---
+const pool = require('../Utils/Pool');
+
+const getDescuentoByJugadorIdModel = async (jugador_id) => {
+  const [rows] = await pool.query(
+    `SELECT *
+     FROM descuentos_jugadores
+     WHERE jugador_id = ? AND activo = 1`,
+    [jugador_id]
+  );
+  return rows[0] || null;
+};
+
+const createDescuentoModel = async (data) => {
+  const { jugador_id, porcentaje_descuento, motivo } = data;
+
+  const [res] = await pool.query(
+    `INSERT INTO descuentos_jugadores
+      (jugador_id, porcentaje_descuento, motivo)
+     VALUES (?, ?, ?)`,
+    [jugador_id, porcentaje_descuento, motivo]
+  );
+
+  return res.insertId;
+};
+
+const updateDescuentoModel = async (descuento_jugador_id, data) => {
+  const { porcentaje_descuento, motivo, activo } = data;
+
+  await pool.query(
+    `UPDATE descuentos_jugadores
+     SET porcentaje_descuento = ?, motivo = ?, activo = ?
+     WHERE descuento_jugador_id = ?`,
+    [porcentaje_descuento, motivo, activo, descuento_jugador_id]
+  );
+};
+
+const deleteDescuentoModel = async (descuento_jugador_id) => {
+  await pool.query(
+    `UPDATE descuentos_jugadores
+     SET activo = 0
+     WHERE descuento_jugador_id = ?`,
+    [descuento_jugador_id]
+  );
+};
+
+module.exports = {
+  getDescuentoByJugadorIdModel,
+  createDescuentoModel,
+  updateDescuentoModel,
+  deleteDescuentoModel
+};
+--- FIN ARCHIVO: Models\descuentosJugadores.js ---
+
+
+--- INICIO ARCHIVO: Models\encuentroJugadores.js ---
+const pool = require('../Utils/Pool');
+
+const getAllJugadoresByEncuentroIdModel = async (encuentro_id) => {
+  const [rows] = await pool.query(`
+    SELECT 
+      j.*,
+      e.*,
+      ej.*
+    FROM jugadores j
+    JOIN encuentros_jugadores ej ON j.jugador_id = ej.jugador_id
+    JOIN encuentros e ON ej.encuentro_id = e.encuentro_id
+    WHERE e.encuentro_id = ?
+  `, [encuentro_id]);
+  return rows;
+};
+
+const getAllEncuentrosByJugadorIdModel = async (jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT 
+      e.*,
+      ej.*
+    FROM encuentros e
+    JOIN encuentros_jugadores ej ON e.encuentro_id = ej.encuentro_id
+    WHERE ej.jugador_id = ?
+  `, [jugador_id]);
+  return rows;
+};
+
+const createEncuentroJugadorModel = async (data) => {
+  const { encuentro_id, jugador_id } = data;
+  const [result] = await pool.query(`
+    INSERT INTO encuentros_jugadores (encuentro_id, jugador_id)
+    VALUES (?, ?)
+  `, [encuentro_id, jugador_id]);
+  return { id: result.insertId, ...data };
+};
+
+const updateEncuentroJugadorModel = async (data) => {
+  const { encuentro_jugador_id ,jugador_id } = data;
+  await pool.query(`
+    UPDATE encuentros_jugadores
+    SET jugador_id = ?
+    WHERE encuentro_jugador_id = ?
+  `, [jugador_id, encuentro_jugador_id]);
+  return { ...data };
+};
+
+const deleteEncuentroJugadorModel = async (encuentro_jugador_id) => {
+  await pool.query(`
+    DELETE FROM encuentros_jugadores
+    WHERE encuentro_jugador_id = ?
+  `, [encuentro_jugador_id]);
+};
+
+module.exports = {
+  getAllJugadoresByEncuentroIdModel,
+  getAllEncuentrosByJugadorIdModel,
+  createEncuentroJugadorModel,
+  updateEncuentroJugadorModel,
+  deleteEncuentroJugadorModel
+};
+--- FIN ARCHIVO: Models\encuentroJugadores.js ---
+
+
+--- INICIO ARCHIVO: Models\encuentros.js ---
+const pool = require('../Utils/Pool');
+
+/* =========================
+   CRUD BÁSICO
+========================= */
+
+const getEncuentroByIdModel = async (encuentro_id) => {
+  const [rows] = await pool.query(
+    `SELECT * FROM encuentros WHERE encuentro_id = ?`,
+    [encuentro_id]
+  );
+  return rows[0] || null;
+};
+
+const createEncuentroModel = async (data) => {
+  const {
+    torneo_categoria_id,
+    fecha,
+    equipo_local,
+    equipo_visitante,
+    goles_local,
+    goles_visitante,
+    resultado
+  } = data;
+
+  const [res] = await pool.query(`
+    INSERT INTO encuentros
+    (torneo_categoria_id, fecha, equipo_local, equipo_visitante, goles_local, goles_visitante, resultado)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `, [
+    torneo_categoria_id,
+    fecha,
+    equipo_local,
+    equipo_visitante,
+    goles_local,
+    goles_visitante,
+    resultado
+  ]);
+
+  return { encuentro_id: res.insertId, ...data };
+};
+
+const updateEncuentroModel = async (encuentro_id, data) => {
+  const {
+    fecha,
+    equipo_local,
+    equipo_visitante,
+    goles_local,
+    goles_visitante,
+    resultado
+  } = data;
+
+  await pool.query(`
+    UPDATE encuentros
+    SET fecha = ?, equipo_local = ?, equipo_visitante = ?,
+        goles_local = ?, goles_visitante = ?, resultado = ?
+    WHERE encuentro_id = ?
+  `, [
+    fecha,
+    equipo_local,
+    equipo_visitante,
+    goles_local,
+    goles_visitante,
+    resultado,
+    encuentro_id
+  ]);
+};
+
+const deleteEncuentroModel = async (encuentro_id) => {
+  await pool.query(`DELETE FROM encuentros WHERE encuentro_id = ?`, [encuentro_id]);
+};
+
+/* =========================
+   CONSULTAS PARA VISTAS
+========================= */
+
+/**
+ * Últimos encuentros del club (tabla tipo "Últimos Resultados")
+ */
+const getUltimosEncuentrosByClubModel = async (club_id, limit = 5) => {
+  const [rows] = await pool.query(`
+    SELECT
+      e.encuentro_id,
+      e.fecha,
+      e.equipo_local,
+      e.equipo_visitante,
+      e.goles_local,
+      e.goles_visitante,
+      e.resultado,
+      t.nombre AS torneo
+    FROM encuentros e
+    JOIN torneos_categorias tc ON tc.torneo_categoria_id = e.torneo_categoria_id
+    JOIN torneos t ON t.torneo_id = tc.torneo_id
+    JOIN categorias c ON c.categoria_id = tc.categoria_id
+    WHERE c.club_id = ?
+    ORDER BY e.fecha DESC
+    LIMIT ?
+  `, [club_id, limit]);
+
+  return rows;
+};
+
+/**
+ * Detalle completo del encuentro (cabecera)
+ */
+const getDetalleEncuentroModel = async (encuentro_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      e.*,
+      t.nombre AS torneo,
+      c.nombre AS categoria
+    FROM encuentros e
+    JOIN torneos_categorias tc ON tc.torneo_categoria_id = e.torneo_categoria_id
+    JOIN torneos t ON t.torneo_id = tc.torneo_id
+    JOIN categorias c ON c.categoria_id = tc.categoria_id
+    WHERE e.encuentro_id = ?
+  `, [encuentro_id]);
+
+  return rows[0] || null;
+};
+
+module.exports = {
+  getEncuentroByIdModel,
+  createEncuentroModel,
+  updateEncuentroModel,
+  deleteEncuentroModel,
+  getUltimosEncuentrosByClubModel,
+  getDetalleEncuentroModel
+};
+--- FIN ARCHIVO: Models\encuentros.js ---
+
+
+--- INICIO ARCHIVO: Models\entrenamientos.js ---
+const pool = require('../Utils/Pool');
+
+/* =========================
+   CRUD
+========================= */
+
+const createEntrenamientoModel = async ({ categoria_id, fecha }) => {
+  const [res] = await pool.query(`
+    INSERT INTO entrenamientos (categoria_id, fecha)
+    VALUES (?, ?)
+  `, [categoria_id, fecha]);
+
+  return { entrenamiento_id: res.insertId, categoria_id, fecha };
+};
+
+const getEntrenamientosByCategoriaModel = async (categoria_id) => {
+  const [rows] = await pool.query(`
+    SELECT *
+    FROM entrenamientos
+    WHERE categoria_id = ?
+    ORDER BY fecha DESC
+  `, [categoria_id]);
+
+  return rows;
+};
+
+const deleteEntrenamientoModel = async (entrenamiento_id) => {
+  await pool.query(
+    `DELETE FROM entrenamientos WHERE entrenamiento_id = ?`,
+    [entrenamiento_id]
+  );
+};
+
+/* =========================
+   MÉTRICAS FUTURAS
+========================= */
+
+/**
+ * Total de entrenamientos de una categoría
+ */
+const getTotalEntrenamientosCategoriaModel = async (categoria_id) => {
+  const [rows] = await pool.query(`
+    SELECT COUNT(*) AS total
+    FROM entrenamientos
+    WHERE categoria_id = ?
+  `, [categoria_id]);
+
+  return rows[0].total;
+};
+
+module.exports = {
+  createEntrenamientoModel,
+  getEntrenamientosByCategoriaModel,
+  deleteEntrenamientoModel,
+  getTotalEntrenamientosCategoriaModel
+};
+--- FIN ARCHIVO: Models\entrenamientos.js ---
+
+
+--- INICIO ARCHIVO: Models\estadisticasJugadores.js ---
+const pool = require('../Utils/Pool');
+
+/* =========================
+   CRUD
+========================= */
+
+const getEstadisticasByEncuentroModel = async (encuentro_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      ej.*,
+      j.nombre AS jugador
+    FROM estadisticas_jugadores ej
+    JOIN jugadores j ON j.jugador_id = ej.jugador_id
+    WHERE ej.encuentro_id = ?
+  `, [encuentro_id]);
+
+  return rows;
+};
+
+const createEstadisticaModel = async (data) => {
+  const {
+    encuentro_id,
+    jugador_id,
+    goles,
+    asistencias,
+    tarjeta_amarilla,
+    tarjeta_roja,
+    minutos_jugados,
+    calificacion
+  } = data;
+
+  await pool.query(`
+    INSERT INTO estadisticas_jugadores
+    (encuentro_id, jugador_id, goles, asistencias, tarjeta_amarilla, tarjeta_roja, minutos_jugados, calificacion)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    encuentro_id,
+    jugador_id,
+    goles,
+    asistencias,
+    tarjeta_amarilla,
+    tarjeta_roja,
+    minutos_jugados,
+    calificacion
+  ]);
+};
+
+const deleteEstadisticasByEncuentroModel = async (encuentro_id) => {
+  await pool.query(
+    `DELETE FROM estadisticas_jugadores WHERE encuentro_id = ?`,
+    [encuentro_id]
+  );
+};
+
+module.exports = {
+  getEstadisticasByEncuentroModel,
+  createEstadisticaModel,
+  deleteEstadisticasByEncuentroModel
+};
+--- FIN ARCHIVO: Models\estadisticasJugadores.js ---
+
+
+--- INICIO ARCHIVO: Models\estadoCuenta.js ---
+const pool = require('../Utils/Pool');
+
+/**
+ * Estado de cuenta completo
+ */
+async function getEstadoCuentaJugador(jugador_id) {
+  const [rows] = await pool.query(`
+    SELECT
+      cj.cargo_jugador_id,
+      cf.nombre_default AS concepto,
+      cf.concepto_key,
+      cfc.periodo,
+      cj.monto,
+      cj.estado,
+      cj.cuota_numero,
+      cj.cuotas_totales,
+      cj.creado_en
+    FROM cargos_jugadores cj
+    JOIN conceptos_facturacion cf
+      ON cf.concepto_id = cj.concepto_id
+    JOIN ciclos_facturacion cfc
+      ON cfc.ciclo_id = cj.ciclo_id
+    WHERE cj.jugador_id = ?
+    ORDER BY cfc.fecha_inicio DESC, cj.creado_en DESC
+  `, [jugador_id]);
+
+  return rows;
+}
+
+/**
+ * Resumen económico (tarjeta)
+ */
+async function getResumenEconomicoJugador(jugador_id) {
+  const [[row]] = await pool.query(`
+    SELECT
+      IFNULL(SUM(cj.monto), 0) AS total_facturado,
+      IFNULL(SUM(CASE WHEN cj.estado = 'pagado' THEN cj.monto ELSE 0 END), 0) AS total_pagado,
+      IFNULL(SUM(CASE WHEN cj.estado != 'pagado' THEN cj.monto ELSE 0 END), 0) AS total_deuda
+    FROM cargos_jugadores cj
+    WHERE cj.jugador_id = ?
+  `, [jugador_id]);
+
+  return row;
+}
+
+/**
+ * Deuda actual
+ */
+async function getDeudaActualJugador(jugador_id) {
+  const [rows] = await pool.query(`
+    SELECT
+      cj.cargo_jugador_id,
+      cf.nombre_default AS concepto,
+      cfc.periodo,
+      cj.monto,
+      cj.estado
+    FROM cargos_jugadores cj
+    JOIN conceptos_facturacion cf
+      ON cf.concepto_id = cj.concepto_id
+    JOIN ciclos_facturacion cfc
+      ON cfc.ciclo_id = cj.ciclo_id
+    WHERE cj.jugador_id = ?
+      AND cj.estado IN ('pendiente', 'parcial')
+    ORDER BY cfc.fecha_inicio
+  `, [jugador_id]);
+
+  return rows;
+}
+
+module.exports = {
+  getEstadoCuentaJugador,
+  getResumenEconomicoJugador,
+  getDeudaActualJugador
+};
+--- FIN ARCHIVO: Models\estadoCuenta.js ---
+
+
+--- INICIO ARCHIVO: Models\gastos.js ---
+
+const pool = require('../Utils/Pool');
+
+const getGastosByClubIdModel = async(club_id)=>{
+  const [res] = await pool.query(`SELECT * FROM gastos WHERE club_id = ? ORDER BY gasto_id DESC`, [club_id]);
+  return res;
+}
+
+const getGastosByIdModel = async (gastos_id) => {
+  const [res] = await pool.query(`SELECT * FROM gastos WHERE gasto_id = ?`, [gastos_id]);
+  return res[0];
+};
+
+const createGastosModel = async (data) => {
+  const {club_id,descripcion,monto,fecha,tipo} = data;
+  const [res] = await pool.query('INSERT INTO gastos (club_id, descripcion, monto, fecha, tipo) VALUES (?, ?, ?, ?, ?)', [club_id, descripcion, monto, fecha, tipo]);
+  return { gastos_id: res.insertId, ...data };
+};
+
+const updateGastosModel = async (gastos_id, data) => {
+  const {descripcion,monto,tipo}= data
+  await pool.query('UPDATE gastos SET descripcion = ?, monto = ?, tipo = ? WHERE gasto_id = ?', [descripcion, monto, tipo, gastos_id]);
+  return getGastosByIdModel(gastos_id);
+};
+
+const deleteGastosModel = async (gastos_id) => {
+  await pool.query('DELETE FROM gastos WHERE gasto_id = ?', [gastos_id]);
+  return { deleted: true };
+};
+
+
+module.exports = {
+  getGastosByClubIdModel,
+  getGastosByIdModel,
+  createGastosModel,
+  updateGastosModel,
+  deleteGastosModel
+};
+--- FIN ARCHIVO: Models\gastos.js ---
+
+
+--- INICIO ARCHIVO: Models\horariosCategoria.js ---
+const pool = require('../Utils/Pool');
+
+
+const getAllHorariosByCategoriaIdModel = async (categoria_id, club_id) => {
+  const [rows] = await pool.query(
+    `
+    SELECT *
+    FROM horarios_entrenamiento
+    WHERE categoria_id = ?
+      AND club_id = ?
+    ORDER BY FIELD(dia_semana,
+      'lunes','martes','miercoles','jueves','viernes','sabado','domingo'
+    ), hora_inicio
+    `,
+    [categoria_id, club_id]
+  );
+  return rows;
+};
+
+
+const getHorarioByIdModel = async (horario_id, club_id) => {
+  const [rows] = await pool.query(
+    `
+    SELECT *
+    FROM horarios_entrenamiento
+    WHERE id = ?
+      AND club_id = ?
+    `,
+    [horario_id, club_id]
+  );
+  return rows[0];
+};
+
+
+const createHorarioModel = async (data) => {
+  const {
+    categoria_id,
+    dia_semana,
+    hora_inicio,
+  } = data;
+
+  const [result] = await pool.query(
+    `
+    INSERT INTO horarios_entrenamiento
+    (categoria_id, club_id, dia_semana, hora_inicio)
+    VALUES (?, ?, ?, ?)
+    `,
+    [categoria_id, club_id, dia_semana, hora_inicio]
+  );
+
+  return result.insertId;
+
+};
+
+const updateHorarioModel = async (horario_id, data) => {
+  const {
+    dia_semana,
+    hora_inicio,
+    hora_fin
+  } = data;
+
+  await pool.query(
+    `
+    UPDATE horarios_entrenamiento
+    SET
+      dia_semana = ?,
+      hora_inicio = ?,
+      hora_fin = ?
+    WHERE id = ?
+    `,
+    [dia_semana, hora_inicio, hora_fin, horario_id]
+  );
+};
+
+
+const deleteHorarioModel = async (horario_id) => {
+  await pool.query(
+    `
+    DELETE FROM horarios_entrenamiento
+    WHERE id = ?
+    `,
+    [horario_id]
+  );
+};
+
+const createManyHorariosModel = async ({ categoria_id, horarios }) => {
+  const values = horarios.map(h => ([
+    categoria_id,
+    h.day,
+    h.time
+  ]));
+
+  const [result] = await pool.query(
+    `
+    INSERT INTO horarios_entrenamiento
+    (categoria_id, dia_semana, hora_inicio)
+    VALUES ?
+    `,
+    [values]
+  );
+
+  return result.affectedRows;
+};
+module.exports = {
+  getAllHorariosByCategoriaIdModel,
+  getHorarioByIdModel,
+  createHorarioModel,
+  updateHorarioModel,
+  deleteHorarioModel,
+  createManyHorariosModel
+};
+--- FIN ARCHIVO: Models\horariosCategoria.js ---
+
+
+--- INICIO ARCHIVO: Models\ingresos.js ---
+const pool = require('../Utils/Pool');
+
+/* ===============================
+   INGRESOS POR CLUB
+================================ */
+const getAllIngresosByClubModel = async (club_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      i.ingreso_id,
+      i.fecha,
+      i.monto,
+      i.metodo_pago,
+      i.tipo,
+      i.concepto,
+      i.referencia,
+      j.nombre AS jugador_nombre,
+      c.nombre AS categoria_nombre
+    FROM ingresos i
+    LEFT JOIN jugadores j ON j.jugador_id = i.jugador_id
+    LEFT JOIN categorias c ON c.categoria_id = j.categoria_id
+    WHERE i.club_id = ?
+      AND i.activo = 1
+    ORDER BY i.ingreso_id DESC
+  `, [club_id]);
+
+  return rows;
+};
+
+/* ===============================
+   CREATE
+================================ */
+const createIngresoModel = async (data) => {
+  const {
+    club_id,
+    jugador_id = null,
+    cargo_id = null,
+    tipo,
+    concepto,
+    fecha,
+    monto,
+    metodo_pago,
+    referencia,
+    creado_por
+  } = data;
+
+  const [res] = await pool.query(`
+    INSERT INTO ingresos
+      (
+        club_id,
+        jugador_id,
+        cargo_id,
+        tipo,
+        concepto,
+        fecha,
+        monto,
+        metodo_pago,
+        referencia,
+        creado_por
+      )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    club_id,
+    jugador_id,
+    cargo_id,
+    tipo,
+    concepto,
+    fecha,
+    monto,
+    metodo_pago,
+    referencia,
+    creado_por
+  ]);
+
+  return { ingreso_id: res.insertId };
+};
+
+/* ===============================
+   UPDATE
+================================ */
+const updateIngresoModel = async (ingreso_id, data) => {
+  const {
+    concepto,
+    fecha,
+    monto,
+    metodo_pago,
+    referencia
+  } = data;
+
+  await pool.query(`
+    UPDATE ingresos
+    SET concepto = ?,
+        fecha = ?,
+        monto = ?,
+        metodo_pago = ?,
+        referencia = ?
+    WHERE ingreso_id = ?
+  `, [
+    concepto,
+    fecha,
+    monto,
+    metodo_pago,
+    referencia,
+    ingreso_id
+  ]);
+
+  return true;
+};
+
+/* ===============================
+   DELETE (SOFT)
+================================ */
+const deleteIngresoModel = async (ingreso_id) => {
+  const [res] = await pool.query(`
+    UPDATE ingresos
+    SET activo = 0
+    WHERE ingreso_id = ?
+  `, [ingreso_id]);
+
+  return res.affectedRows > 0;
+};
+
+module.exports = {
+  getAllIngresosByClubModel,
+  createIngresoModel,
+  updateIngresoModel,
+  deleteIngresoModel
+};
+--- FIN ARCHIVO: Models\ingresos.js ---
+
+
+--- INICIO ARCHIVO: Models\invitaciones.js ---
+const pool = require('../Utils/Pool');
+
+const createInvitacion = async ({ email, club_id, tipo, token }) => {
+  const [res] = await pool.query(
+    `INSERT INTO invitaciones (email, club_id, tipo, token)
+     VALUES (?, ?, ?, ?)`,
+    [email, club_id, tipo, token]
+  );
+  return { invitacion_id: res.insertId };
+};
+
+const getByToken = async (token) => {
+  const [rows] = await pool.query(
+    `SELECT * FROM invitaciones
+     WHERE token = ? AND estado = 'pendiente'`,
+    [token]
+  );
+  return rows[0] || null;
+};
+
+const getInviteByTokenModel = async (token) => {
+  const [rows] = await pool.query(
+    `
+    SELECT *
+    FROM invitaciones
+    WHERE token = ?
+    `,
+    [token]
+  );
+  return rows[0] || null;
+};
+
+const markInviteAsAcceptedModel = async (invitationId) => {
+  await pool.query(
+    `
+    UPDATE invitaciones
+    SET estado = 'aceptada',
+        aceptada_en = NOW()
+    WHERE invitacion_id = ?
+    `,
+    [invitationId]
+  );
+};
+
+
+const listByClub = async (club_id) => {
+  const [rows] = await pool.query(
+    `SELECT * FROM invitaciones
+     WHERE club_id = ?
+     ORDER BY creada_en DESC`,
+    [club_id]
+  );
+  return rows;
+};
+
+const cancelInvitacion = async (invitacion_id, club_id) => {
+  const [res] = await pool.query(
+    `UPDATE invitaciones
+     SET estado = 'cancelada'
+     WHERE invitacion_id = ? AND club_id = ?`,
+    [invitacion_id, club_id]
+  );
+  return res.affectedRows > 0;
+};
+
+module.exports = {
+
+  createInvitacion,
+  getByToken,
+  getInviteByTokenModel,
+  markInviteAsAcceptedModel,
+  listByClub,
+  cancelInvitacion
+};
+--- FIN ARCHIVO: Models\invitaciones.js ---
+
+
+--- INICIO ARCHIVO: Models\jugadores.js ---
+const { get } = require('http');
+const pool = require('../Utils/Pool');
+
+/**
+ * Jugadores por club (club inferido por categoría)
+ */
+const getJugadoresByClubModel = async (club_id) => {
+  const [rows] = await pool.query(`
+    SELECT j.*
+    FROM jugadores j
+    JOIN categorias c ON c.categoria_id = j.categoria_id
+    WHERE c.club_id = ?
+    ORDER BY j.jugador_id DESC
+  `, [club_id]);
+
+  return rows;
+};
+
+
+/* ===============================
+   MAIN PLAYER CARDS POR CLUB
+================================ */
+const getPlayersMainCardDataByClubIdModel = async (club_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      j.jugador_id,
+      j.nombre,
+      j.foto_url,
+
+      TIMESTAMPDIFF(YEAR, j.fecha_nacimiento, CURDATE()) AS edad,
+
+      c.nombre AS categoria_nombre,
+
+      pa.nombre AS plan_nombre,
+      ROUND(
+        cfc.monto_base_plan * (pa.porcentaje_aplicado / 100),
+        2
+      ) AS monto_plan,
+
+      pos.categoria_posicion AS posicionTag,
+      pos.color AS colorTag
+
+    FROM jugadores j
+
+    JOIN categorias c
+      ON c.categoria_id = j.categoria_id
+     AND c.club_id = ?
+
+    JOIN configuracion_facturacion_club cfc
+      ON cfc.club_id = c.club_id
+
+    LEFT JOIN planes_afiliacion pa
+      ON pa.plan_afiliacion_id = j.plan_afiliacion_id
+
+    LEFT JOIN jugadores_posiciones jp
+      ON jp.jugador_id = j.jugador_id
+     AND jp.orden = 1
+
+    LEFT JOIN posiciones pos
+      ON pos.posicion_id = jp.posicion_id
+
+    WHERE j.activo = 1
+
+    ORDER BY j.jugador_id DESC
+  `, [club_id]);
+
+  return rows;
+};
+
+
+
+const searchJugadoresModel = async (club_id, q) => {
+  const like = `%${q}%`;
+
+  const [rows] = await pool.query(`
+    SELECT j.jugador_id,
+     j.nombre,
+    j.foto_url, 
+    TIMESTAMPDIFF(YEAR, j.fecha_nacimiento, CURDATE()) AS edad,
+    c.nombre AS categoria_nombre,
+    p.nombre AS plan_nombre,  
+    pos.categoria_posicion AS posicionTag,
+    pos.color AS colorTag
+    
+
+    FROM jugadores j
+    JOIN categorias c ON c.categoria_id = j.categoria_id
+    LEFT JOIN planes_afiliacion p
+      ON p.plan_afiliacion_id = j.plan_afiliacion_id
+    LEFT JOIN jugadores_posiciones jp
+      ON jp.jugador_id = j.jugador_id
+      AND jp.orden = 1
+    LEFT JOIN posiciones pos
+      ON pos.posicion_id = jp.posicion_id
+
+    WHERE c.club_id = ?
+      AND (
+        j.nombre LIKE ?
+        OR j.dni LIKE ?
+      )
+    ORDER BY j.nombre ASC, j.jugador_id ASC
+    LIMIT 20
+  `, [club_id, like, like]);
+
+  return rows;
+};
+
+const getJugadoresByPosicionModel = async (club_id, categoria_posicion) => {
+  const [rows] = await pool.query(`
+    SELECT DISTINCT
+      j.jugador_id,
+      j.nombre,
+      p.categoria_posicion,
+      p.color
+    FROM jugadores j
+    JOIN categorias c ON c.categoria_id = j.categoria_id
+    JOIN jugadores_posiciones jp
+      ON jp.jugador_id = j.jugador_id
+     AND jp.orden = 1
+    JOIN posiciones p ON p.posicion_id = jp.posicion_id
+    WHERE c.club_id = ?
+      AND p.categoria_posicion = ?
+    ORDER BY j.nombre ASC, j.jugador_id ASC
+  `, [club_id, categoria_posicion]);
+
+  return rows;
+};
+
+const getJugadoresOrdenadosModel = async (club_id, dir = 'ASC') => {
+  const order =
+    dir === 'DESC'
+      ? `'delantero','mediocampista','defensor','arquero'`
+      : `'arquero','defensor','mediocampista','delantero'`;
+
+  const [rows] = await pool.query(`
+    SELECT DISTINCT
+      j.jugador_id,
+      j.nombre,
+      p.categoria_posicion,
+      p.color
+    FROM jugadores j
+    JOIN categorias c ON c.categoria_id = j.categoria_id
+    LEFT JOIN jugadores_posiciones jp
+      ON jp.jugador_id = j.jugador_id
+     AND jp.orden = 1
+    LEFT JOIN posiciones p ON p.posicion_id = jp.posicion_id
+    WHERE c.club_id = ?
+    ORDER BY
+      FIELD(p.categoria_posicion, ${order}),
+      j.nombre,
+      j.jugador_id
+  `, [club_id]);
+
+  return rows;
+};
+
+
+
+
+//  * Jugadores por categoría
+ 
+const getJugadoresByCategoriaModel = async (categoria_id) => {
+  const [rows] = await pool.query(`
+    SELECT *
+    FROM jugadores
+    WHERE categoria_id = ?
+    ORDER BY jugador_id DESC
+  `, [categoria_id]);
+
+  return rows;
+};
+
+/**
+ * Jugador por ID (sin club explícito)
+ */
+const getJugadorByIdModel = async (jugador_id) => {
+  const [rows] = await pool.query(
+    `SELECT * FROM jugadores WHERE jugador_id = ?`,
+    [jugador_id]
+  );
+  return rows[0] || null;
+};
+
+/**
+ * Crear jugador
+ */
+const createJugadorModel = async (data) => {
+  const {
+    categoria_id,
+    dni,
+    nombre,
+    fecha_nacimiento,
+    genero,
+    pie_habil,
+    mail,
+    telefono,
+    direccion,
+    plan_afiliacion_id,
+    foto_url
+  } = data;
+
+  const [res] = await pool.query(`
+    INSERT INTO jugadores
+      (categoria_id, dni, nombre, fecha_nacimiento, genero, pie_habil,
+       mail, telefono, direccion, plan_afiliacion_id, foto_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    categoria_id, dni, nombre, fecha_nacimiento, genero,
+    pie_habil, mail, telefono, direccion, plan_afiliacion_id, foto_url
+  ]);
+
+  return { jugador_id: res.insertId };
+};
+
+
+const updateJugadorModel = async (jugador_id, data) => {
+  const {
+    categoria_id,
+    dni,
+    nombre,
+    fecha_nacimiento,
+    genero,
+    pie_habil,
+    mail,
+    telefono,
+    direccion,
+    plan_afiliacion_id,
+    foto_url,
+    activo
+  } = data;
+
+  await pool.query(`
+    UPDATE jugadores
+    SET categoria_id = ?, dni = ?, nombre = ?, fecha_nacimiento = ?,
+        genero = ?, pie_habil = ?, mail = ?, telefono = ?, direccion = ?,
+        plan_afiliacion_id = ?, foto_url = ?, activo = ?
+    WHERE jugador_id = ?
+  `, [
+    categoria_id, dni, nombre, fecha_nacimiento, genero,
+    pie_habil, mail, telefono, direccion,
+    plan_afiliacion_id, foto_url, activo, jugador_id
+  ]);
+
+  return getJugadorByIdModel(jugador_id);
+};
+
+
+const deleteJugadorModel = async (jugador_id) => {
+  const [res] = await pool.query(
+    `DELETE FROM jugadores WHERE jugador_id = ?`,
+    [jugador_id]
+  );
+  return res.affectedRows > 0;
+};
+
+const getMainPlayerCardDataModel = async (jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      j.jugador_id,
+      j.nombre,
+      j.foto_url,
+
+      TIMESTAMPDIFF(YEAR, j.fecha_nacimiento, CURDATE()) AS edad,
+
+      c.nombre AS categoria_nombre,
+
+      pa.nombre AS plan_nombre,
+      ROUND(
+        cfc.monto_base_plan * (pa.porcentaje_aplicado / 100),
+        2
+      ) AS monto_plan,
+
+      pos.categoria_posicion AS posicionTag,
+      pos.color AS colorTag
+
+    FROM jugadores j
+
+    JOIN categorias c
+      ON c.categoria_id = j.categoria_id
+
+    JOIN configuracion_facturacion_club cfc
+      ON cfc.club_id = c.club_id
+
+    LEFT JOIN planes_afiliacion pa
+      ON pa.plan_afiliacion_id = j.plan_afiliacion_id
+
+    LEFT JOIN jugadores_posiciones jp
+      ON jp.jugador_id = j.jugador_id
+     AND jp.orden = 1
+
+    LEFT JOIN posiciones pos
+      ON pos.posicion_id = jp.posicion_id
+
+    WHERE j.jugador_id = ?
+  `, [jugador_id]);
+
+  return rows[0] || null;
+};
+
+async function getJugadorDeportivoModel(jugador_id) {
+
+  // 1️⃣ Datos base
+  const [[jugador]] = await pool.query(`
+    SELECT
+      j.fecha_alta,
+      j.jugador_id,
+      j.nombre,
+      j.activo AS estado,
+      c.nombre AS categoria,
+      j.fecha_nacimiento,
+      TIMESTAMPDIFF(YEAR, j.fecha_nacimiento, CURDATE()) AS edad,
+      j.pie_habil,
+      j.altura,
+      j.peso,
+      j.fecha_alta,
+      j.foto_url
+    FROM jugadores j
+    JOIN categorias c
+      ON c.categoria_id = j.categoria_id
+    WHERE j.jugador_id = ?
+  `, [jugador_id]);
+
+  if (!jugador) return null;
+
+  // 2️⃣ Posiciones
+  const [posiciones] = await pool.query(`
+    SELECT
+      p.sigla AS codigo,
+      p.nombre,
+      jp.orden
+    FROM jugadores_posiciones jp
+    JOIN posiciones p
+      ON p.posicion_id = jp.posicion_id
+    WHERE jp.jugador_id = ?
+  `, [jugador_id]);
+
+  // 3️⃣ Asistencia
+  const [[posibles]] = await pool.query(`
+    SELECT COUNT(*) AS posibles
+    FROM entrenamientos
+    WHERE fecha >= ?
+  `, [jugador.fecha_alta]);
+
+  const [[asistidos]] = await pool.query(`
+    SELECT COUNT(*) AS asistidos
+    FROM asistencias_entrenamiento
+    WHERE jugador_id = ?
+      AND fecha >= ?
+  `, [jugador_id, jugador.fecha_alta]);
+
+  // 4️⃣ Estadísticas
+  const [[estadisticas]] = await pool.query(`
+  SELECT
+    COUNT(*)                               AS partidos,
+    COALESCE(SUM(minutos_jugados), 0)      AS minutos,
+    COALESCE(SUM(goles), 0)                AS goles,
+    COALESCE(SUM(asistencias), 0)          AS asistencias,
+    COALESCE(SUM(tarjeta_amarilla), 0)     AS tarjetas_amarillas,
+    COALESCE(SUM(tarjeta_roja), 0)          AS tarjetas_rojas,
+    COALESCE(AVG(calificacion), 0)         AS calificacion_promedio
+  FROM estadisticas_jugadores
+  WHERE jugador_id = ?
+`, [jugador_id]);
+
+  return {
+    jugador: {
+      fecha_alta: jugador.fecha_alta,
+      jugador_id: jugador.jugador_id,
+      nombre: jugador.nombre,
+      estado: jugador.estado,
+      categoria: jugador.categoria,
+      fecha_nacimiento: jugador.fecha_nacimiento,
+      edad: jugador.edad,
+      pie_habil: jugador.pie_habil,
+      altura: jugador.altura,
+      peso: jugador.peso,
+      foto_url: jugador.foto_url
+    },
+    posiciones: {
+      principal: posiciones.find(p => p.orden === 1)?.codigo || null,
+      secundarias: posiciones
+        .filter(p => p.orden !== 1)
+        .map(p => p.codigo)
+    },
+    asistencia: {
+      asistidos: asistidos.asistidos,
+      posibles: posibles.posibles
+    },
+    estadisticas
+  };
+}
+
+
+
+
+async function getJugadorContactoModel(jugador_id) {
+  const [[data]] = await pool.query(`
+    SELECT
+      j.jugador_id,
+
+      /* ===== JUGADOR ===== */
+      j.nombre        AS jugador_nombre,
+      j.dni           AS jugador_dni,
+      j.mail          AS jugador_email,
+      j.telefono      AS jugador_telefono,
+      j.direccion     AS jugador_direccion,
+      j.fecha_alta    AS jugador_fecha_alta,
+
+      /* ===== TUTOR (opcional) ===== */
+      t.tutor_id,
+      t.nombre        AS tutor_nombre,
+      t.dni           AS tutor_dni,
+      t.telefono      AS tutor_telefono,
+      t.email         AS tutor_email,
+      t.direccion     AS tutor_direccion,
+
+      /* ===== RELACIÓN ===== */
+      jt.parentesco   AS tutor_parentesco,
+
+      /* ===== FLAG FRONT ===== */
+      CASE
+        WHEN t.tutor_id IS NULL THEN 0
+        ELSE 1
+      END AS tiene_tutor
+
+    FROM jugadores j
+
+    LEFT JOIN jugadores_tutores jt
+      ON jt.jugador_id = j.jugador_id
+
+    LEFT JOIN tutores t
+      ON t.tutor_id = jt.tutor_id
+
+    WHERE j.jugador_id = ?
+  `, [jugador_id]);
+
+  return data || null;
+}
+
+
+async function getJugadorEstadoCuentaModel(jugador_id) {
+
+/* =========================
+ * 1️⃣ PLAN + DESCUENTOS
+ * ========================= */
+const [[plan]] = await pool.query(`
+  SELECT
+    pa.nombre AS plan_nombre,
+
+    cfc.monto_base_plan AS monto_base,
+
+    IFNULL(pa.porcentaje_aplicado, 0) AS descuento_plan,
+    IFNULL(dj.porcentaje_descuento, 0) AS descuento_jugador
+
+  FROM jugadores j
+
+  JOIN categorias cat
+    ON cat.categoria_id = j.categoria_id
+
+  JOIN configuracion_facturacion_club cfc
+    ON cfc.club_id = cat.club_id
+   AND cfc.activo = 1
+
+  JOIN planes_afiliacion pa
+    ON pa.plan_afiliacion_id = j.plan_afiliacion_id
+
+  LEFT JOIN descuentos_jugadores dj
+    ON dj.jugador_id = j.jugador_id
+   AND dj.activo = 1
+
+  WHERE j.jugador_id = ?
+`, [jugador_id]);
+
+if (!plan) return null;
+
+const descuento_total =
+  plan.descuento_plan + plan.descuento_jugador;
+
+const monto_final =
+  Math.max(
+    plan.monto_base * (1 - descuento_total / 100),
+    0
+  );
+
+/* =========================
+ * 2️⃣ ESTADO GENERAL DE CUENTA
+ * ========================= */
+const [[estadoCuenta]] = await pool.query(`
+  SELECT
+    SUM(CASE WHEN cj.estado = 'pendiente' THEN cj.monto ELSE 0 END) AS deuda,
+    SUM(CASE WHEN cj.estado = 'pagado' THEN cj.monto ELSE 0 END)    AS pagado
+  FROM cargos_jugadores cj
+  WHERE cj.jugador_id = ?
+`, [jugador_id]);
+
+/* =========================
+ * 3️⃣ ÚLTIMOS INGRESOS (PAGOS)
+ * ========================= */
+const [pagos] = await pool.query(`
+  SELECT
+    i.ingreso_id,
+    i.fecha,
+    i.monto,
+    i.metodo_pago,
+    i.referencia
+  FROM ingresos i
+  WHERE i.jugador_id = ?
+    AND i.activo = 1
+  ORDER BY i.fecha DESC
+  LIMIT 5
+`, [jugador_id]);
+
+/* =========================
+ * 4️⃣ LISTA DE CARGOS
+ * ========================= */
+const [cargos] = await pool.query(`
+  SELECT
+    cj.cargo_jugador_id,
+    c.nombre              AS concepto,
+    cj.monto,
+    cj.estado,
+    cj.cuota_numero,
+    cj.cuotas_totales,
+    cj.creado_en
+  FROM cargos_jugadores cj
+  JOIN cargos c
+    ON c.cargo_id = cj.cargo_id
+  WHERE cj.jugador_id = ?
+  ORDER BY cj.creado_en DESC
+`, [jugador_id]);
+
+return {
+  plan: {
+    nombre: plan.plan_nombre,
+    monto_base: plan.monto_base,
+    descuento_total,
+    monto_final
+  },
+  estado_cuenta: {
+    deuda: estadoCuenta.deuda || 0,
+    pagado: estadoCuenta.pagado || 0
+  },
+  ultimos_pagos: pagos,
+  cargos
+};
+}
+
+
+module.exports = {
+  getJugadorEstadoCuentaModel,
+  getJugadorContactoModel,
+  getJugadorDeportivoModel,
+  getJugadoresByPosicionModel,
+  getJugadoresByClubModel,
+  getJugadoresOrdenadosModel,
+  getPlayersMainCardDataByClubIdModel,
+  searchJugadoresModel,
+  getJugadoresByCategoriaModel,
+  getJugadorByIdModel,
+  getMainPlayerCardDataModel,
+  createJugadorModel,
+  updateJugadorModel,
+  deleteJugadorModel
+};
+--- FIN ARCHIVO: Models\jugadores.js ---
+
+
+--- INICIO ARCHIVO: Models\jugadoresFinanzas.js ---
+const pool = require('../Utils/Pool');
+
+/* =====================================================
+ * PLAN BASE + PLAN AFILIACIÓN + DESCUENTO PERSONAL
+ * ===================================================== */
+async function getPlanFinancieroJugador(jugador_id) {
+  const [[row]] = await pool.query(`
+    SELECT
+      COALESCE(pa.nombre, 'Plan Base')        AS plan_nombre,
+      cfc.monto_base_plan                    AS plan_base,
+      COALESCE(pa.porcentaje_aplicado, 100)  AS porcentaje_plan,
+      IFNULL(dj.porcentaje_descuento, 0)     AS descuento_personal
+    FROM jugadores j
+    JOIN categorias c
+      ON c.categoria_id = j.categoria_id
+    JOIN configuracion_facturacion_club cfc
+      ON cfc.club_id = c.club_id
+    LEFT JOIN planes_afiliacion pa
+      ON pa.plan_afiliacion_id = j.plan_afiliacion_id
+    LEFT JOIN descuentos_jugadores dj
+      ON dj.jugador_id = j.jugador_id
+     AND dj.activo = 1
+    WHERE j.jugador_id = ?
+  `, [jugador_id]);
+
+  return row;
+}
+
+/* =====================================================
+ * ESTADO DE CUENTA (SUMAS)
+ * ===================================================== */
+async function getEstadoCuentaRaw(jugador_id) {
+  const [[row]] = await pool.query(`
+    SELECT
+      COALESCE(SUM(cj.monto - IFNULL(p.total_pagado, 0)), 0) AS deuda,
+      COALESCE(SUM(IFNULL(p.total_pagado, 0)), 0) AS pagado
+    FROM cargos_jugadores cj
+    LEFT JOIN (
+      SELECT
+        cargo_jugador_id,
+        SUM(monto_aplicado) AS total_pagado
+      FROM ingresos_cargos
+      GROUP BY cargo_jugador_id
+    ) p ON p.cargo_jugador_id = cj.cargo_jugador_id
+    WHERE cj.jugador_id = ?
+      AND cj.estado != 'anulado'
+  `, [jugador_id]);
+
+  return row;
+}
+
+/* =====================================================
+ * LISTA DE CARGOS
+ * ===================================================== */
+async function getCargosJugador(jugador_id) {
+  const [rows] = await pool.query(`
+    SELECT
+      cj.cargo_jugador_id,
+      cf.nombre_default AS concepto,
+      cj.monto,
+      cj.estado,
+      cj.creado_en
+    FROM cargos_jugadores cj
+    JOIN conceptos_facturacion cf
+      ON cf.concepto_id = cj.concepto_id
+    WHERE cj.jugador_id = ?
+    ORDER BY cj.creado_en DESC
+  `, [jugador_id]);
+
+  return rows;
+}
+
+/* =====================================================
+ * ÚLTIMOS PAGOS / INGRESOS
+ * ===================================================== */
+async function getUltimosPagosJugador(jugador_id) {
+  const [rows] = await pool.query(`
+    SELECT
+      ingreso_id,
+      fecha,
+      monto,
+      metodo_pago,
+      referencia
+    FROM ingresos
+    WHERE jugador_id = ?
+      AND activo = 1
+    ORDER BY fecha DESC
+    LIMIT 5
+  `, [jugador_id]);
+
+  return rows;
+}
+
+module.exports = {
+  getPlanFinancieroJugador,
+  getEstadoCuentaRaw,
+  getCargosJugador,
+  getUltimosPagosJugador
+};
+--- FIN ARCHIVO: Models\jugadoresFinanzas.js ---
+
+
+--- INICIO ARCHIVO: Models\jugadoresPosiciones.js ---
+const { get } = require('http');
+const pool = require('../Utils/Pool');
+
+/**
+ * Crear UNA relación jugador–posición
+ */
+const createJugadorPosicionModel = async ({ jugador_id, posicion_id, orden }) => {
+  const [res] = await pool.query(`
+    INSERT INTO jugadores_posiciones (jugador_id, posicion_id, orden)
+    VALUES (?, ?, ?)
+  `, [jugador_id, posicion_id, orden]);
+
+  return res.insertId;
+};
+
+/**
+ * Crear MUCHAS relaciones jugador–posición (bulk)
+ */
+const createManyJugadorPosicionesModel = async (jugador_id, posiciones) => {
+  // posiciones: [{ posicion_id, orden }]
+  const values = posiciones.map(p => [
+    jugador_id,
+    p.posicion_id,
+    p.orden
+  ]);
+
+  await pool.query(`
+    INSERT INTO jugadores_posiciones (jugador_id, posicion_id, orden)
+    VALUES ?
+  `, [values]);
+
+  return true;
+};
+
+/**
+ * Borrar UNA relación jugador–posición
+ */
+const deleteJugadorPosicionModel = async (jugador_id, posicion_id) => {
+  const [res] = await pool.query(`
+    DELETE FROM jugadores_posiciones
+    WHERE jugador_id = ? AND posicion_id = ?
+  `, [jugador_id, posicion_id]);
+
+  return res.affectedRows > 0;
+};
+
+/**
+ * Borrar TODAS las posiciones de un jugador
+ * (útil para replace)
+ */
+const deleteAllJugadorPosicionesModel = async (jugador_id) => {
+  await pool.query(`
+    DELETE FROM jugadores_posiciones
+    WHERE jugador_id = ?
+  `, [jugador_id]);
+
+  return true;
+};
+
+/**
+ * Todas las posiciones del jugador
+ */
+const getPosicionesByJugadorModel = async (jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT jp.posicion_id, p.nombre, p.sigla, p.color, jp.orden
+    FROM jugadores_posiciones jp
+    JOIN posiciones p ON p.posicion_id = jp.posicion_id
+    WHERE jp.jugador_id = ?
+    ORDER BY jp.orden ASC
+  `, [jugador_id]);
+
+  return rows;
+};
+
+/**
+ * Posición principal (orden = 1)
+ */
+const getPosicionPrincipalModel = async (jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT p.*
+    FROM jugadores_posiciones jp
+    JOIN posiciones p ON p.posicion_id = jp.posicion_id
+    WHERE jp.jugador_id = ? AND jp.orden = 1
+  `, [jugador_id]);
+
+  return rows[0] || null;
+};
+
+module.exports = {
+  getPosicionesByJugadorModel,
+  getPosicionPrincipalModel
+};
+
+module.exports = {
+  createJugadorPosicionModel,
+  createManyJugadorPosicionesModel,
+  deleteJugadorPosicionModel,
+  deleteAllJugadorPosicionesModel,
+  getPosicionesByJugadorModel,
+  getPosicionPrincipalModel
+};
+--- FIN ARCHIVO: Models\jugadoresPosiciones.js ---
+
+
+--- INICIO ARCHIVO: Models\jugadoresTutores.js ---
+const pool = require('../Utils/Pool');
+
+/**
+ * Obtener relaciones por jugador
+ */
+const getRelacionesByJugadorIdModel = async (jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT 
+      jt.id,
+      jt.parentesco,
+      t.tutor_id,
+      t.nombre,
+      t.dni,
+      t.email,
+      t.telefono,
+      t.direccion
+    FROM jugadores_tutores jt
+    INNER JOIN tutores t ON t.tutor_id = jt.tutor_id
+    WHERE jt.jugador_id = ?
+    ORDER BY jt.id DESC
+  `, [jugador_id]);
+
+  return rows;
+};
+
+/**
+ * Obtener relaciones por tutor
+ */
+const getRelacionesByTutorIdModel = async (tutor_id) => {
+  const [rows] = await pool.query(`
+    SELECT 
+      jt.id,
+      jt.parentesco,
+      j.jugador_id,
+      j.nombre,
+      j.apellido,
+      j.dni
+    FROM jugadores_tutores jt
+    INNER JOIN jugadores j ON j.jugador_id = jt.jugador_id
+    WHERE jt.tutor_id = ?
+    ORDER BY jt.id DESC
+  `, [tutor_id]);
+
+  return rows;
+};
+
+/**
+ * Obtener relación puntual jugador–tutor
+ */
+const getRelacionByIdsModel = async (jugador_id, tutor_id) => {
+  const [rows] = await pool.query(`
+    SELECT *
+    FROM jugadores_tutores
+    WHERE jugador_id = ? AND tutor_id = ?
+    LIMIT 1
+  `, [jugador_id, tutor_id]);
+
+  return rows[0] || null;
+};
+
+module.exports = {
+  getRelacionesByJugadorIdModel,
+  getRelacionesByTutorIdModel,
+  getRelacionByIdsModel
+};
+--- FIN ARCHIVO: Models\jugadoresTutores.js ---
+
+
+--- INICIO ARCHIVO: Models\ModelIndex.js ---
+
+module.exports = {
+  clientes: require('./clientes'),
+  clubes: require('./clubes'),
+  usuarios: require('./usuarios'),
+  categorias: require('./categorias'),
+  jugadores: require('./jugadores'),
+  tutores: require('./tutores'),
+  horarios: require('./horarios_entrenamiento'),
+  asistencias: require('./asistencias_entrenamiento'),
+  pagos: require('../models/pagos'),
+  torneos: require('./torneos'),
+  torneosCategorias: require('./torneos_categorias'),
+  encuentros: require('./encuentros'),
+  estadisticasJugadores: require('./estadisticas_jugadores'),
+  gastos: require('./gastos'),
+  reportes: require('./reportes'),
+};
+// models/ModelIndex.js
+--- FIN ARCHIVO: Models\ModelIndex.js ---
+
+
+--- INICIO ARCHIVO: Models\pagos.js ---
+/* =========================================
+   INGRESOS
+========================================= */
+async function crearIngreso(db, {
+  club_id,
+  jugador_id,
+  cargo_id,
+  concepto,
+  monto,
+  metodo_pago,
+  referencia,
+  creado_por
+}) {
+  const [result] = await db.query(`
+    INSERT INTO ingresos
+      (
+        club_id,
+        jugador_id,
+        cargo_id,
+        tipo,
+        concepto,
+        fecha,
+        monto,
+        metodo_pago,
+        referencia,
+        activo,
+        creado_por
+      )
+    VALUES (?, ?, ?, NULL, ?, NOW(), ?, ?, ?, 1, ?)
+  `, [
+    club_id,
+    jugador_id,
+    cargo_id,
+    concepto,
+    monto,
+    metodo_pago,
+    referencia,
+    creado_por
+  ]);
+
+  return result.insertId;
+}
+
+/* =========================================
+   IMPUTAR INGRESO A CARGO
+========================================= */
+async function imputarIngresoACargo(db, {
+  ingreso_id,
+  cargo_jugador_id,
+  monto_aplicado
+}) {
+  await db.query(`
+    INSERT INTO ingresos_cargos
+      (ingreso_id, cargo_jugador_id, monto_aplicado)
+    VALUES (?, ?, ?)
+  `, [ingreso_id, cargo_jugador_id, monto_aplicado]);
+}
+
+/* =========================================
+   TOTAL PAGADO DE UN CARGO
+========================================= */
+async function getTotalPagadoCargo(db, cargo_jugador_id) {
+  const [[row]] = await db.query(`
+    SELECT COALESCE(SUM(monto_aplicado),0) AS total_pagado
+    FROM ingresos_cargos
+    WHERE cargo_jugador_id = ?
+  `, [cargo_jugador_id]);
+
+  return Number(row.total_pagado);
+}
+
+/* =========================================
+   DATOS DEL CARGO
+========================================= */
+async function getCargo(db, cargo_jugador_id) {
+  const [[row]] = await db.query(`
+    SELECT
+      cj.cargo_jugador_id,
+      cj.monto,
+      cj.estado,
+      j.jugador_id,
+      c.club_id,
+      cf.nombre_default AS concepto
+    FROM cargos_jugadores cj
+    JOIN jugadores j ON j.jugador_id = cj.jugador_id
+    JOIN categorias c ON c.categoria_id = j.categoria_id
+    JOIN conceptos_facturacion cf ON cf.concepto_id = cj.concepto_id
+    WHERE cj.cargo_jugador_id = ?
+  `, [cargo_jugador_id]);
+
+  return row;
+}
+
+/* =========================================
+   ACTUALIZAR ESTADO DEL CARGO
+========================================= */
+async function actualizarEstadoCargo(db, cargo_jugador_id, estado) {
+  await db.query(`
+    UPDATE cargos_jugadores
+    SET estado = ?
+    WHERE cargo_jugador_id = ?
+  `, [estado, cargo_jugador_id]);
+}
+
+module.exports = {
+  crearIngreso,
+  imputarIngresoACargo,
+  getTotalPagadoCargo,
+  getCargo,
+  actualizarEstadoCargo
+};
+--- FIN ARCHIVO: Models\pagos.js ---
+
+
+--- INICIO ARCHIVO: Models\personalCategoria.js ---
+const pool = require('../Utils/Pool');
+
+/* ===============================
+   CATEGORIAS POR USUARIO (club-safe)
+================================ */
+const getCategoriasByUsuarioModel = async (user_id, club_id) => {
+  const [rows] = await pool.query(`
+    SELECT 
+      pc.personal_categoria_id,
+      c.categoria_id,
+      c.nombre AS categoria,
+      pc.role
+    FROM personal_categoria pc
+    JOIN categorias c 
+      ON c.categoria_id = pc.categoria_id
+    JOIN usuarios_clubes uc
+      ON uc.user_id = pc.user_id
+     AND uc.club_id = ?
+     AND uc.activo = 1
+    WHERE pc.user_id = ?
+  `, [club_id, user_id]);
+
+  return rows;
+};
+
+/* ===============================
+   USUARIOS POR CATEGORIA (club-safe)
+================================ */
+const getUsuariosByCategoriaModel = async (categoria_id, club_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      u.user_id,
+      u.nombre,
+      u.email,
+      pc.role
+    FROM personal_categoria pc
+    JOIN usuarios u 
+      ON u.user_id = pc.user_id
+    JOIN usuarios_clubes uc
+      ON uc.user_id = u.user_id
+     AND uc.club_id = ?
+     AND uc.activo = 1
+    WHERE pc.categoria_id = ?
+  `, [club_id, categoria_id]);
+
+  return rows;
+};
+
+/* ===============================
+   CREATE (valida club)
+================================ */
+const createCategoriaUsuarioModel = async ({ categoria_id, user_id, club_id, role }) => {
+  // validar pertenencia al club
+  const [belongs] = await pool.query(`
+    SELECT 1 FROM usuarios_clubes
+    WHERE user_id = ? AND club_id = ? AND activo = 1
+  `, [user_id, club_id]);
+
+  if (!belongs.length) return null;
+
+  const [exists] = await pool.query(`
+    SELECT personal_categoria_id
+    FROM personal_categoria
+    WHERE categoria_id = ? AND user_id = ?
+  `, [categoria_id, user_id]);
+
+  if (exists.length > 0) return false;
+
+  const [res] = await pool.query(`
+    INSERT INTO personal_categoria (categoria_id, user_id, role)
+    VALUES (?, ?, ?)
+  `, [categoria_id, user_id, role]);
+
+  return {
+    personal_categoria_id: res.insertId,
+    categoria_id,
+    user_id,
+    role
+  };
+};
+
+/* ===============================
+   UPDATE ROLE
+================================ */
+const updatePersonalCategoriaModel = async (id, role) => {
+  const [res] = await pool.query(`
+    UPDATE personal_categoria
+    SET role = ?
+    WHERE personal_categoria_id = ?
+  `, [role, id]);
+
+  return res.affectedRows > 0;
+};
+
+/* ===============================
+   DELETE
+================================ */
+const deletePersonalCategoriaModel = async (id) => {
+  const [res] = await pool.query(`
+    DELETE FROM personal_categoria
+    WHERE personal_categoria_id = ?
+  `, [id]);
+
+  return res.affectedRows > 0;
+};
+
+module.exports = {
+  getCategoriasByUsuarioModel,
+  getUsuariosByCategoriaModel,
+  createCategoriaUsuarioModel,
+  updatePersonalCategoriaModel,
+  deletePersonalCategoriaModel
+};
+--- FIN ARCHIVO: Models\personalCategoria.js ---
+
+
+--- INICIO ARCHIVO: Models\planesAfiliacion.js ---
+const pool = require('../Utils/Pool');
+
+/* ===============================
+   GET planes por club
+================================ */
+const getAllPlanesByClubModel = async (club_id) => {
+  const [rows] = await pool.query(
+    `
+    SELECT
+      pa.plan_afiliacion_id,
+      pa.nombre,
+      pa.descripcion,
+      pa.porcentaje_aplicado,
+      pa.es_plan_base,
+      pa.activo,
+
+      cfc.monto_base_plan,
+
+      ROUND(
+        cfc.monto_base_plan * (pa.porcentaje_aplicado / 100),
+        2
+      ) AS monto_calculado
+
+    FROM planes_afiliacion pa
+
+    JOIN configuracion_facturacion_club cfc
+      ON cfc.club_id = pa.club_id
+
+    WHERE pa.club_id = ?
+      AND pa.activo = 1
+
+    ORDER BY pa.es_plan_base DESC, pa.porcentaje_aplicado DESC
+    `,
+    [club_id]
+  );
+
+  return rows;
+};
+/* ===============================
+   GET plan por ID
+================================ */
+const getPlanByIdModel = async (plan_afiliacion_id, club_id) => {
+  const [rows] = await pool.query(
+    `
+    SELECT *
+    FROM planes_afiliacion
+    WHERE plan_afiliacion_id = ? AND club_id = ?
+    `,
+    [plan_afiliacion_id, club_id]
+  );
+  return rows[0] || null;
+};
+
+/* ===============================
+   CREATE plan (NO base)
+================================ */
+const createPlanModel = async (data) => {
+  const {
+    club_id,
+    nombre,
+    descripcion,
+    porcentaje_aplicado,
+    es_plan_base
+  } = data;
+
+  const [res] = await pool.query(
+    `
+    INSERT INTO planes_afiliacion
+      (club_id, nombre, descripcion, porcentaje_aplicado, es_plan_base)
+    VALUES (?, ?, ?, ?, ?)
+    `,
+    [club_id, nombre, descripcion, porcentaje_aplicado, es_plan_base]
+  );
+
+  return res.insertId;
+};
+
+/* ===============================
+   UPDATE plan
+================================ */
+const updatePlanModel = async (plan_afiliacion_id, club_id, data) => {
+  const { nombre, descripcion, porcentaje_aplicado, activo } = data;
+
+  await pool.query(
+    `
+    UPDATE planes_afiliacion
+    SET nombre = ?,
+        descripcion = ?,
+        porcentaje_aplicado = ?,
+        activo = ?
+    WHERE plan_afiliacion_id = ?
+      AND club_id = ?
+      AND es_plan_base = 0
+    `,
+    [
+      nombre,
+      descripcion,
+      porcentaje_aplicado,
+      activo,
+      plan_afiliacion_id,
+      club_id
+    ]
+  );
+};
+
+/* ===============================
+   DELETE plan (lógico)
+================================ */
+const deletePlanModel = async (plan_afiliacion_id, club_id) => {
+  await pool.query(
+    `
+    UPDATE planes_afiliacion
+    SET activo = 0
+    WHERE plan_afiliacion_id = ?
+      AND club_id = ?
+      AND es_plan_base = 0
+    `,
+    [plan_afiliacion_id, club_id]
+  );
+};
+
+const existsPlanBaseByClubModel = async (club_id) => {
+  const [rows] = await pool.query(
+    `
+    SELECT 1
+    FROM planes_afiliacion
+    WHERE club_id = ?
+      AND es_plan_base = 1
+      AND activo = 1
+    LIMIT 1
+    `,
+    [club_id]
+  );
+
+  return rows.length > 0;
+};
+
+
+module.exports = {
+  getAllPlanesByClubModel,
+  getPlanByIdModel,
+  createPlanModel,
+  updatePlanModel,
+  deletePlanModel,
+  existsPlanBaseByClubModel
+};
+--- FIN ARCHIVO: Models\planesAfiliacion.js ---
+
+
+--- INICIO ARCHIVO: Models\reportes.js ---
+
+const pool = require('../Utils/Pool');
+
+module.exports = {
+  // 1) Encuentro + torneo + (categorías y club vía inscripción) + estadísticas de jugadores
+  async encuentroCompleto(encuentro_id) {
+    const [rows] = await pool.query(`
+      SELECT 
+        e.encuentro_id, e.fecha, e.equipo_local, e.equipo_visitante, e.resultado,
+        t.torneo_id, t.nombre AS torneo_nombre,
+        c.categoria_id, c.nombre AS categoria_nombre,
+        cl.club_id, cl.nombre AS club_nombre
+      FROM encuentros e
+      JOIN torneos t ON t.torneo_id = e.torneo_id
+      JOIN torneos_categorias tc ON tc.torneo_id = t.torneo_id
+      JOIN categorias c ON c.categoria_id = tc.categoria_id
+      JOIN clubes cl ON cl.club_id = c.club_id
+      WHERE e.encuentro_id = ?
+    `, [encuentro_id]);
+
+    const [stats] = await pool.query(`
+      SELECT es.*, j.nombre AS jugador_nombre
+      FROM estadisticas_jugadores es
+      JOIN jugadores j ON j.jugador_id = es.jugador_id
+      WHERE es.encuentro_id = ?
+      ORDER BY es.estadistica_id DESC
+    `, [encuentro_id]);
+
+    return { encuentro: rows[0] || null, estadisticas: stats };
+  },
+
+  // 2) Todos los encuentros de un club (por cualquiera de sus categorías inscriptas en ese torneo)
+  async encuentrosPorClub(club_id) {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT e.*
+      FROM encuentros e
+      JOIN torneos t ON t.torneo_id = e.torneo_id
+      JOIN torneos_categorias tc ON tc.torneo_id = t.torneo_id
+      JOIN categorias c ON c.categoria_id = tc.categoria_id
+      WHERE c.club_id = ?
+      ORDER BY e.fecha DESC, e.encuentro_id DESC
+    `, [club_id]);
+    return rows;
+  },
+
+  // 3) Estadísticas por club, con contexto del encuentro y torneo
+  async estadisticasPorClub(club_id) {
+    const [rows] = await pool.query(`
+      SELECT es.*, 
+             e.fecha, e.equipo_local, e.equipo_visitante, e.resultado,
+             t.nombre AS torneo_nombre,
+             j.nombre AS jugador_nombre,
+             c.nombre AS categoria_nombre,
+             cl.nombre AS club_nombre
+      FROM estadisticas_jugadores es
+      JOIN encuentros e ON e.encuentro_id = es.encuentro_id
+      JOIN torneos t ON t.torneo_id = e.torneo_id
+      JOIN jugadores j ON j.jugador_id = es.jugador_id
+      JOIN categorias c ON c.categoria_id = j.categoria_id
+      JOIN clubes cl ON cl.club_id = c.club_id
+      WHERE cl.club_id = ?
+      ORDER BY e.fecha DESC, es.estadistica_id DESC
+    `, [club_id]);
+    return rows;
+  },
+};
+
+--- FIN ARCHIVO: Models\reportes.js ---
+
+
+--- INICIO ARCHIVO: Models\torneoCategorias.js ---
+const pool = require('../Utils/Pool');
+
+/**
+ * Vincular torneo con categoría
+ */
+const addCategoriaToTorneoModel = async (torneo_id, categoria_id) => {
+  await pool.query(`
+    INSERT INTO torneos_categorias (torneo_id, categoria_id)
+    VALUES (?, ?)
+  `, [torneo_id, categoria_id]);
+};
+
+/**
+ * Obtener categorías de un torneo
+ */
+const getCategoriasByTorneoModel = async (torneo_id) => {
+  const [rows] = await pool.query(`
+    SELECT c.*
+    FROM torneos_categorias tc
+    JOIN categorias c ON c.categoria_id = tc.categoria_id
+    WHERE tc.torneo_id = ?
+  `, [torneo_id]);
+
+  return rows;
+};
+
+/**
+ * Quitar categoría de torneo
+ */
+const removeCategoriaFromTorneoModel = async (torneo_id, categoria_id) => {
+  await pool.query(`
+    DELETE FROM torneos_categorias
+    WHERE torneo_id = ? AND categoria_id = ?
+  `, [torneo_id, categoria_id]);
+};
+
+
+
+/**
+ * Obtener torneos en los que participa una categoría
+ * Devuelve TAMBIÉN el torneo_categoria_id
+ */
+const getTorneosByCategoriaModel = async (categoria_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      tc.torneo_categoria_id,
+      t.torneo_id,
+      t.nombre,
+      t.formato,
+      t.fecha_inicio,
+      t.fecha_fin
+    FROM torneos_categorias tc
+    JOIN torneos t
+      ON t.torneo_id = tc.torneo_id
+    WHERE tc.categoria_id = ?
+    ORDER BY t.fecha_inicio DESC
+  `, [categoria_id]);
+
+  return rows;
+};
+
+module.exports = {
+  getTorneosByCategoriaModel,
+  addCategoriaToTorneoModel,
+  getCategoriasByTorneoModel,
+  removeCategoriaFromTorneoModel
+};
+--- FIN ARCHIVO: Models\torneoCategorias.js ---
+
+
+--- INICIO ARCHIVO: Models\torneos.js ---
+const pool = require('../Utils/Pool');
+
+/**
+ * Obtener todos los torneos del club
+ */
+const getTorneosByClubModel = async (club_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      t.torneo_id,
+      t.nombre,
+      t.formato,
+      t.fecha_inicio,
+      t.fecha_fin,
+      COUNT(tc.categoria_id) AS total_categorias
+    FROM torneos t
+    LEFT JOIN torneos_categorias tc
+      ON tc.torneo_id = t.torneo_id
+    WHERE t.club_id = ?
+    GROUP BY t.torneo_id
+    ORDER BY t.fecha_inicio DESC
+  `, [club_id]);
+
+  return rows;
+};
+
+/**
+ * Obtener torneo por ID
+ */
+const getTorneoByIdModel = async (torneo_id, club_id) => {
+  const [rows] = await pool.query(`
+    SELECT *
+    FROM torneos
+    WHERE torneo_id = ? AND club_id = ?
+  `, [torneo_id, club_id]);
+
+  return rows[0] || null;
+};
+
+/**
+ * Crear torneo
+ */
+const createTorneoModel = async (data) => {
+  const { club_id, nombre, formato, fecha_inicio } = data;
+
+  const [res] = await pool.query(`
+    INSERT INTO torneos
+      (club_id, nombre, formato, fecha_inicio)
+    VALUES (?, ?, ?, ?)
+  `, [club_id, nombre, formato, fecha_inicio]);
+
+  return { torneo_id: res.insertId };
+};
+
+/**
+ * Actualizar torneo
+ */
+const updateTorneoModel = async (torneo_id, club_id, data) => {
+  const { nombre, formato, fecha_inicio, fecha_fin } = data;
+
+  await pool.query(`
+    UPDATE torneos
+    SET nombre = ?, formato = ?, fecha_inicio = ?, fecha_fin = ?
+    WHERE torneo_id = ? AND club_id = ?
+  `, [nombre, formato, fecha_inicio, fecha_fin, torneo_id, club_id]);
+};
+
+/**
+ * Eliminar torneo
+ */
+const deleteTorneoModel = async (torneo_id, club_id) => {
+  await pool.query(`
+    DELETE FROM torneos
+    WHERE torneo_id = ? AND club_id = ?
+  `, [torneo_id, club_id]);
+};
+
+module.exports = {
+  getTorneosByClubModel,
+  getTorneoByIdModel,
+  createTorneoModel,
+  updateTorneoModel,
+  deleteTorneoModel
+};
+
+--- FIN ARCHIVO: Models\torneos.js ---
+
+
+--- INICIO ARCHIVO: Models\tutores.js ---
+const pool = require('../Utils/Pool');
+
+/**
+ * Buscar tutor por DNI dentro de un club (autocompletado)
+ */
+const getTutorByDniModel = async (club_id, dni) => {
+  const [rows] = await pool.query(`
+    SELECT *
+    FROM tutores
+    WHERE club_id = ? AND dni = ?
+    LIMIT 1
+  `, [club_id, dni]);
+
+  return rows[0] || null;
+};
+
+/**
+ * Obtener tutor por ID
+ */
+const getTutorByIdModel = async (tutor_id) => {
+  const [rows] = await pool.query(
+    'SELECT * FROM tutores WHERE tutor_id = ?',
+    [tutor_id]
+  );
+  return rows[0] || null;
+};
+
+/**
+ * Obtener tutores de un jugador
+ */
+const getTutoresByJugadorIdModel = async (jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT t.*, jt.parentesco
+    FROM jugadores_tutores jt
+    INNER JOIN tutores t ON t.tutor_id = jt.tutor_id
+    WHERE jt.jugador_id = ?
+    ORDER BY t.tutor_id DESC
+  `, [jugador_id]);
+
+  return rows;
+};
+
+/**
+ * Crear tutor
+ */
+const createTutorModel = async (data) => {
+  console.log(data)
+  const { club_id, dni, nombre, email, telefono, direccion } = data;
+
+  const [res] = await pool.query(`
+    INSERT INTO tutores ( club_id,dni, nombre, email, telefono, direccion)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `, [club_id, dni, nombre, email, telefono, direccion]);
+
+  return { tutor_id: res.insertId, ...data };
+};
+
+/**
+ * Vincular tutor con jugador
+ */
+const linkTutorJugadorModel = async ({ jugador_id, tutor_id, parentesco }) => {
+  await pool.query(`
+    INSERT INTO jugadores_tutores (jugador_id, tutor_id, parentesco)
+    VALUES (?, ?, ?)
+  `, [jugador_id, tutor_id, parentesco]);
+};
+
+/**
+ * Actualizar tutor
+ */
+const updateTutorModel = async (tutor_id, data) => {
+  const { nombre, email, telefono, direccion } = data;
+
+  await pool.query(`
+    UPDATE tutores
+    SET nombre = ?, email = ?, telefono = ?, direccion = ?
+    WHERE tutor_id = ?
+  `, [nombre, email, telefono, direccion, tutor_id]);
+
+  return getTutorByIdModel(tutor_id);
+};
+
+/**
+ * Eliminar tutor (solo si no tiene relaciones)
+ */
+const deleteTutorModel = async (tutor_id) => {
+  const [res] = await pool.query(
+    'DELETE FROM tutores WHERE tutor_id = ?',
+    [tutor_id]
+  );
+  return res.affectedRows > 0;
+};
+
+module.exports = {
+  getTutorByDniModel,
+  getTutorByIdModel,
+  getTutoresByJugadorIdModel,
+  createTutorModel,
+  linkTutorJugadorModel,
+  updateTutorModel,
+  deleteTutorModel
+};
+
+--- FIN ARCHIVO: Models\tutores.js ---
+
+
+--- INICIO ARCHIVO: Models\usuarioClubContext.js ---
+
+const pool = require("../Utils/Pool");
+
+const getUserClubContextModel = async (userId, clubId) => {
+  const [rows] = await pool.query(
+    `SELECT tipo 
+     FROM usuarios_clubes 
+     WHERE user_id = ? AND club_id = ? `,
+    [userId, clubId]
+  );
+  return rows[0] || null;
+};
+
+module.exports = { getUserClubContextModel };
+--- FIN ARCHIVO: Models\usuarioClubContext.js ---
+
+
+--- INICIO ARCHIVO: Models\usuarios.js ---
+const pool = require('../Utils/Pool');
+
+const getAllUsersModel = async () => {
+  const [rows] = await pool.query(
+    'SELECT user_id, club_id, nombre, username, email, role, activo FROM usuarios ORDER BY user_id DESC'
+  );
+  return rows;
+};
+
+const getUserByClubIdModel = async (club_id) => {
+  const [rows] = await pool.query(
+    'SELECT user_id, club_id, nombre, username, email, role FROM usuarios WHERE club_id = ?',
+    [club_id]
+  );
+  return rows;
+};
+
+const getUserByIdModel = async (user_id) => {
+  const [rows] = await pool.query(
+    'SELECT user_id, club_id, nombre, username, email, role FROM usuarios WHERE user_id = ?',
+    [user_id]
+  );
+  return rows[0] || null;
+};
+
+const createUserModel = async (userData) => {
+  const { club_id, nombre, username, email, password } = userData;
+  const [res] = await pool.query(
+    'INSERT INTO usuarios (club_id, nombre, username, email, password) VALUES (?, ?, ?, ?, ?)',
+    [club_id, nombre, username, email, password]
+  );
+  return { user_id: res.insertId, ...userData };
+};
+
+const updateUserModel = async (user_id, userData) => {
+  const { nombre, username } = userData;
+  await pool.query(
+    'UPDATE usuarios SET nombre = ?, username = ? WHERE user_id = ?',
+    [nombre, username, user_id]
+  );
+  return getUserByIdModel(user_id);
+};
+
+const updateUserMailModel = async (user_id, newEmail) => {
+  await pool.query(
+    'UPDATE usuarios SET email = ? WHERE user_id = ?',
+    [newEmail, user_id]
+  );
+  return getUserByIdModel(user_id);
+};
+
+const updateUserPasswordModel = async (user_id, newPassword) => {
+  await pool.query(
+    'UPDATE usuarios SET password = ? WHERE user_id = ?',
+    [newPassword, user_id]
+  );
+  return true;
+};
+
+const deleteUserModel = async (user_id) => {
+  const [res] = await pool.query(
+    'UPDATE usuarios SET activo = 0 WHERE user_id = ?',
+    [user_id]
+  );
+  return { ok: res.affectedRows > 0 };
+};
+
+const findUserByEmailModel = async (email) => {
+  const [rows] = await pool.query(
+    'SELECT * FROM usuarios WHERE email = ?',
+    [email]
+  );
+  return rows[0] || null;
+};
+
+const findUserByUsernameModel = async (username) => {
+  const [rows] = await pool.query(
+    'SELECT * FROM usuarios WHERE username = ?',
+    [username]
+  );
+  return rows[0] || null;
+};
+
+module.exports = {
+  getUserByClubIdModel,
+  getAllUsersModel,
+  getUserByIdModel,
+  createUserModel,
+  updateUserModel,
+  updateUserPasswordModel,
+  updateUserMailModel,
+  deleteUserModel,
+  findUserByEmailModel,
+  findUserByUsernameModel
+};
+
+--- FIN ARCHIVO: Models\usuarios.js ---
+
+
+--- INICIO ARCHIVO: Models\usuariosClubes.js ---
+const pool = require("../Utils/Pool");
+
+
+
+
+/* ===============================
+   PERSONAL DEPORTIVO POR CLUB
+================================ */
+const getPersonalDeportivoByClubModel = async (club_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      u.user_id,
+      u.nombre,
+      u.email
+    FROM usuarios_clubes uc
+    JOIN usuarios u ON u.user_id = uc.user_id
+    WHERE uc.club_id = ?
+      AND uc.tipo = 'deportivo'
+      AND uc.activo = 1
+    ORDER BY u.nombre
+  `, [club_id]);
+
+  return rows;
+};
+
+
+/* ===============================
+   CONTEXTO USUARIO / CLUB
+================================ */
+const getUsuarioClubByUserIdModel = async (user_id, club_id) => {
+  const [rows] = await pool.query(`
+    SELECT usuario_club_id, user_id, club_id, tipo, activo
+    FROM usuarios_clubes
+    WHERE user_id = ?
+      AND club_id = ?
+      AND activo = 1
+  `, [user_id, club_id]);
+
+  return rows[0] || null;
+};
+
+/* ===============================
+   USUARIOS POR CLUB
+================================ */
+const getUsuariosByClubModel = async (club_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      uc.usuario_club_id,
+      u.user_id,
+      u.nombre,
+      u.email,
+      uc.tipo,
+      uc.activo,
+      uc.fecha_asignacion
+    FROM usuarios_clubes uc
+    JOIN usuarios u ON u.user_id = uc.user_id
+    WHERE uc.club_id = ?
+      AND uc.activo = 1
+  `, [club_id]);
+
+  return rows;
+};
+
+/* ===============================
+   ASIGNAR / REACTIVAR USUARIO
+================================ */
+const assignUserToClub = async (userId, clubId, tipo) => {
+  const [existing] = await pool.query(`
+    SELECT usuario_club_id, activo
+    FROM usuarios_clubes
+    WHERE user_id = ? AND club_id = ?
+  `, [userId, clubId]);
+
+  if (existing.length > 0) {
+    if (existing[0].activo) {
+      return {
+        status: 409,
+        message: "El usuario ya pertenece al club"
+      };
+    }
+
+    await pool.query(`
+      UPDATE usuarios_clubes
+      SET tipo = ?, activo = 1
+      WHERE user_id = ? AND club_id = ?
+    `, [tipo, userId, clubId]);
+
+    return {
+      status: 200,
+      message: "Usuario reactivado en el club"
+    };
+  }
+
+  await pool.query(`
+    INSERT INTO usuarios_clubes
+      (user_id, club_id, tipo, activo, fecha_asignacion)
+    VALUES (?, ?, ?, 1, NOW())
+  `, [userId, clubId, tipo]);
+
+  return {
+    status: 201,
+    message: "Usuario asignado al club"
+  };
+};
+
+/* ===============================
+   ACTUALIZAR ROL
+================================ */
+const updateRole = async (usuarioClubId, clubId, tipo) => {
+  const [res] = await pool.query(`
+    UPDATE usuarios_clubes
+    SET tipo = ?
+    WHERE usuario_club_id = ?
+      AND club_id = ?
+  `, [tipo, usuarioClubId, clubId]);
+
+  return res.affectedRows > 0;
+};
+
+/* ===============================
+   DESACTIVAR (DELETE LOGICO)
+================================ */
+const deactivate = async (usuarioClubId, clubId) => {
+  const [res] = await pool.query(`
+    UPDATE usuarios_clubes
+    SET activo = 0
+    WHERE usuario_club_id = ?
+      AND club_id = ?
+  `, [usuarioClubId, clubId]);
+
+  return res.affectedRows > 0;
+};
+
+module.exports = {
+  getPersonalDeportivoByClubModel,
+  getUsuarioClubByUserIdModel,
+  getUsuariosByClubModel,
+  assignUserToClub,
+  updateRole,
+  deactivate
+};
+
+--- FIN ARCHIVO: Models\usuariosClubes.js ---
+
+
+--- INICIO ARCHIVO: preparaContexto.js ---
+const fs = require('fs');
+const path = require('path');
+
+// Carpetas y archivos a ignorar
+const IGNORE_DIRS = ['node_modules', '.git', 'dist', 'build', 'coverage'];
+const IGNORE_FILES = ['package-lock.json', '.env', '.DS_Store', 'preparar_contexto.js'];
+const EXTENSIONS = ['.js', '.json', '.html', '.css', '.sql', '.env.example'];
+
+const outputFile = 'contexto_para_gemini.txt';
+
+function getAllFiles(dirPath, arrayOfFiles) {
+  const files = fs.readdirSync(dirPath);
+
+  arrayOfFiles = arrayOfFiles || [];
+
+  files.forEach(function(file) {
+    const fullPath = path.join(dirPath, file);
+    
+    if (fs.statSync(fullPath).isDirectory()) {
+      if (!IGNORE_DIRS.includes(file)) {
+        arrayOfFiles = getAllFiles(fullPath, arrayOfFiles);
+      }
+    } else {
+      if (!IGNORE_FILES.includes(file) && EXTENSIONS.includes(path.extname(file))) {
+        arrayOfFiles.push(fullPath);
+      }
+    }
+  });
+
+  return arrayOfFiles;
+}
+
+const files = getAllFiles(__dirname);
+let content = '';
+
+files.forEach(file => {
+  // Convertir ruta absoluta a relativa para facilitar lectura
+  const relativePath = path.relative(__dirname, file);
+  content += `\n\n--- INICIO ARCHIVO: ${relativePath} ---\n`;
+  content += fs.readFileSync(file, 'utf8');
+  content += `\n--- FIN ARCHIVO: ${relativePath} ---\n`;
+});
+
+fs.writeFileSync(outputFile, content);
+console.log(`¡Listo! Todo el código se guardó en: ${outputFile}`);
+--- FIN ARCHIVO: preparaContexto.js ---
+
+
+--- INICIO ARCHIVO: Routes\asistenciasRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const {
+  createAsistencias,
+  getAsistenciasByEntrenamiento
+} = require('../Controllers/asistenciasController');
+
+const {authExtraction} = require('../Middlewares/authExtraction');
+const {userContext} = require('../Middlewares/userContext');
+
+router.post('/', authExtraction, userContext, createAsistencias);
+router.get('/entrenamiento/:entrenamiento_id', authExtraction, userContext, getAsistenciasByEntrenamiento);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\asistenciasRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\authRoutes.js ---
+const express = require("express");
+const router = express.Router();
+const { login, validateSession ,registerFromInvite} = require("../Controllers/authController");
+
+
+(async () => {
+  const jose = await import("jose");
+  SignJWT = jose.SignJWT;
+  jwtVerify = jose.jwtVerify;
+})();
+
+const { JWT_SECRET } = require("../Utils/jwtConfig.js");
+const testeo = (req,res)=>{
+    data = req.body
+
+    const user = jwtVerify(data, JWT_SECRET)
+    console.log(user)
+    res.send("ok")
+}
+
+
+
+router.get("/validate-session", validateSession);
+router.get("/test",testeo)
+router.post("/register-from-invite", registerFromInvite);
+router.post("/login", login);
+module.exports = router;
+--- FIN ARCHIVO: Routes\authRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\cargosRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const {
+  getCargoById,
+  getCargosByJugador,
+  getCargosByClub,
+  createCargo,
+  updateCargoEstado,
+  deleteCargo
+} = require('../Controllers/cargosController');
+
+// ===============================
+// LISTAR CARGOS POR JUGADOR
+// ===============================
+router.get('/jugador/:jugador_id', getCargosByJugador);
+
+// ===============================
+// LISTAR CARGOS POR CLUB
+// ===============================
+router.get('/club', getCargosByClub);
+
+// ===============================
+// OBTENER CARGO POR ID
+// ===============================
+router.get('/:cargo_id', getCargoById);
+
+// ===============================
+// CREAR CARGO
+// ===============================
+router.post('/', createCargo);
+
+// ===============================
+// ACTUALIZAR ESTADO DE CARGO
+// ===============================
+router.patch('/:cargo_id/estado', updateCargoEstado);
+
+// ===============================
+// ANULAR CARGO (soft delete)
+// ===============================
+router.delete('/:cargo_id', deleteCargo);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\cargosRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\categoriasRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const { getAllCategories ,createCategory,deleteCategory,updateCategory } = require('../Controllers/categoriaController');
+const { authExtraction } = require('../Middlewares/authExtraction');
+const { requireRole } = require('../Middlewares/requireRole');
+const { userContext } = require('../Middlewares/userContext');
+
+
+
+// Rutas para categorias
+router.get('/',authExtraction,userContext, getAllCategories);
+router.post('/', authExtraction,userContext, requireRole(["admin"]), createCategory);
+router.put('/:id', authExtraction,userContext, requireRole(["admin"]), updateCategory);
+router.delete('/:id', authExtraction,userContext, requireRole(["admin"]), deleteCategory);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\categoriasRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\clientesRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+const {  getAllClientes,getClienteById, createCliente ,updateCliente ,deleteCliente } = require('../Controllers/clientesController');
+
+router.get('/', getAllClientes);
+router.get('/:cliente_id', getClienteById);
+router.post('/', createCliente);
+router.put('/:cliente_id', updateCliente);
+router.delete('/:cliente_id', deleteCliente);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\clientesRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\clubesRoutes.js ---
+
+const express = require('express');
+const router = express.Router();
+const { getAllClubs, getClubsByClient,createClub,updateClub,deleteClub} = require('../Controllers/clubesController');
+
+
+// Rutas para clubes
+router.get('/', getAllClubs);
+router.get('/:cliente_id', getClubsByClient);
+router.post('/', createClub);
+router.put('/:club_id', updateClub);
+router.delete('/:club_id', deleteClub);
+module.exports = router;
+--- FIN ARCHIVO: Routes\clubesRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\dataRouter.js ---
+const express = require('express');
+const router = express.Router();
+const { getAllCategories ,createCategory,deleteCategory,updateCategory } = require('../Controllers/categoriaController');
+const { getAllAsistenciaByCategoria,createAsistencia,updateAsistencia,deleteAsistencia} = require('../Controllers/asistenciaController');
+const { getAllClubs, getClubsByClient,createClub,updateClub,deleteClub} = require('../Controllers/clubesController');
+const { getAllClientes, getClienteById, createCliente, updateCliente, deleteCliente } = require('../Controllers/clienteController');
+const { getJugadorById,getJugadoresByCategoriaId,getJugadoresByClubId,getJugadoresFiltrados,createJugador,updateJugador,deleteJugador } = require('../Controllers/jugadorcontroller');
+const { getAllTorneosByClub, createTorneo, updateTorneo, deleteTorneo, getTorneoById} = require('../Controllers/torneoController');
+const { inscribirCategoria, getCategoriasByTorneo, getTorneosByCategoria, deleteRelacion } = require('../Controllers/torneoCategoriaController');
+const { getTutorById, getTutoresByJugadorId, createTutor, deleteTutor,updateTutor}= require('../Controllers/tutoresController');
+const { getGastosByClubId,createGastos,deleteGastos,updateGastos,getGastosById }= require('../Controllers/gastosController');
+const { getUserById,getAllUsers,createUser,updateUser,updateUserPassword,deleteUser, updateUserMail} = require('../Controllers/userController');
+const { getAllEntrenamientosByCategoriaId, getEntrenamientosById, createEntrenamientos, updateEntrenamientos, deleteEntrenamientos } = require('../Controllers/entrenamientosController');
+const { getAllPagosByClub,createPago,updatePago,deletePago} = require('../Controllers/pagosController');
+const { getAllEncuentrosByTorneoCategoriaId,getEncuentroById,createEncuentro,deleteEncuentro,updateEncuentro}=require('../Controllers/encuentroController');
+const { getEstadisticaByTorneoId,getEstadisticaByJugadorId,createEstadistica,updateEstadistica,deleteEstadistica} = require('../Controllers/estadisticaController');
+const { getAllEncuentrosByJugadorId,getAllJugadoresByEncuentroId,createEncuentroJugador,deleteEncuentroJugador,updateEncuentroJugador} =require('../Controllers/encuentroJugadorController');
+
+
+
+// Rutas para asistencia 
+
+router.get('/asistencias/categoria/:categoria_id', getAllAsistenciaByCategoria);
+router.post('/asistencias', createAsistencia);
+router.put('/asistencias/:id_asistencia', updateAsistencia);
+router.delete('/asistencias/:id_asistencia', deleteAsistencia);
+
+// Rutas para clientes
+router.get('/clientes', getAllClientes);
+router.get('/clientes/:id', getClienteById);
+router.post('/clientes', createCliente);
+router.put('/clientes/:id', updateCliente);
+router.delete('/clientes/:id', deleteCliente);
+
+// Rutas para categorias
+router.get('/categorias/:clubID', getAllCategories);
+router.post('/categorias', createCategory);
+router.put('/categorias/:id', updateCategory);
+router.delete('/categorias/:id', deleteCategory);
+
+
+// Rutas para clubes
+router.get('/clubes', getAllClubs);
+router.get('/clubes/:cliente_id', getClubsByClient);
+router.post('/clubes', createClub);
+router.put('/clubes/:club_id', updateClub);
+router.delete('/clubes/:club_id', deleteClub);
+
+// Rutas Para Jugadores
+router.get('/jugadores/:club_id', getJugadoresByClubId);
+router.get('/jugadores/categoria/:categoria_id', getJugadoresByCategoriaId);
+router.get('/jugadores/jugador/:jugador_id', getJugadorById);
+router.post('/jugadores', createJugador);
+router.put('/jugadores/:jugador_id', updateJugador);
+router.delete('/jugadores/:jugador_id', deleteJugador);
+router.post('/jugadores/filtros', getJugadoresFiltrados);
+
+// Rutas para torneos
+    
+router.get('/torneos/:club_id', getAllTorneosByClub);
+router.get('/torneos/:torneo_id', getTorneoById);
+router.post('/torneos', createTorneo);
+router.put('/torneos/:torneo_id', updateTorneo);
+router.delete('/torneos/:torneo_id', deleteTorneo);
+
+//Rutas para torneo-categoria
+router.post('/torneos-categorias', inscribirCategoria);
+router.get('/torneos-categorias/:torneo_id', getCategoriasByTorneo);
+router.get('/torneos-categorias/:categoria_id', getTorneosByCategoria);
+router.delete('/torneos-categorias/:torneo_categoria_id', deleteRelacion);
+
+// Rutas para tutores
+router.get('/tutores/:id', getTutorById);
+router.get('/tutores/jugador/:id', getTutoresByJugadorId);
+router.post('/tutores', createTutor);
+router.put('/tutores/:id', updateTutor);
+router.delete('/tutores/:id', deleteTutor);
+
+// Rutas para gastos
+
+router.get('/gastos/club/:club_id', getGastosByClubId);
+router.get('/gastos/:gastos_id', getGastosById);
+router.post('/gastos', createGastos);
+router.put('/gastos/:gastos_id', updateGastos);
+router.delete('/gastos/:gastos_id', deleteGastos);
+
+// Rutas para usuarios
+
+router.get('/usuarios', getAllUsers);
+router.get('/usuarios/:id', getUserById);
+router.post('/usuarios', createUser);
+router.put('/usuarios/:id', updateUser);
+router.patch('/usuarios/:id/password', updateUserPassword);
+router.delete('/usuarios/:id', deleteUser);
+router.patch('/usuarios/:id/email', updateUserMail);
+
+//Rutas para entrenamientos
+
+router.get('/entrenamientos/categoria/:categoria_id', getAllEntrenamientosByCategoriaId);
+router.get('/entrenamientos/:id_horario', getEntrenamientosById);
+router.post('/entrenamientos', createEntrenamientos);
+router.put('/entrenamientos/:id_horario', updateEntrenamientos);
+router.delete('/entrenamientos/:id_horario', deleteEntrenamientos);
+
+// Rutas para pagos
+router.get('/pagos/club/:club_id', getAllPagosByClub);
+router.post('/pagos', createPago);
+router.put('/pagos/:pago_id', updatePago);
+router.delete('/pagos/:pago_id', deletePago);
+
+// Rutas para encuentros
+router.get('/encuentros/:torneo_id/:categoria_id', getAllEncuentrosByTorneoCategoriaId);
+router.get('/encuentros/:encuentro_id', getEncuentroById);
+router.post('/encuentros', createEncuentro);
+router.put('/encuentros/:encuentro_id', updateEncuentro);
+router.delete('/encuentros/:encuentro_id', deleteEncuentro);
+
+//---------rutas para estadisticas
+router.get('/estadisticas/torneo/:torneo_id', getEstadisticaByTorneoId);
+router.get('/estadisticas/jugador/:jugador_id', getEstadisticaByJugadorId);
+router.post('/estadisticas', createEstadistica);
+router.put('/estadisticas/:id', updateEstadistica);
+router.delete('/estadisticas/:id', deleteEstadistica);
+
+
+//Rutas para encuentroJugador
+router.get('/encuentro-jugador/:encuentro_id', getAllJugadoresByEncuentroId);
+router.get('/encuentro-jugador/jugador/:jugador_id', getAllEncuentrosByJugadorId);
+router.post('/encuentro-jugador', createEncuentroJugador);
+router.put('/encuentro-jugador/:encuentro_jugador_id', updateEncuentroJugador);
+router.delete('/encuentro-jugador/:encuentro_jugador_id', deleteEncuentroJugador);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\dataRouter.js ---
+
+
+--- INICIO ARCHIVO: Routes\descuentosJugadoresRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const {authExtraction} = require('../Middlewares/authExtraction');
+const {userContext} = require('../Middlewares/userContext');
+const {requireRole} = require('../Middlewares/requireRole');
+
+const {
+  getDescuentoByJugador,
+  createDescuento,
+  updateDescuento,
+  deleteDescuento
+} = require('../Controllers/descuentosJugadoresController');
+
+router.get('/jugador/:jugador_id', authExtraction, userContext, getDescuentoByJugador);
+router.post('/', authExtraction, userContext, requireRole(['admin']), createDescuento);
+router.put('/:id', authExtraction, userContext, requireRole(['admin']), updateDescuento);
+router.delete('/:id', authExtraction, userContext, requireRole(['admin']), deleteDescuento);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\descuentosJugadoresRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\encuentroJugadorRoutes.js ---
+
+const express = require('express');
+const router = express.Router();
+
+const { getAllEncuentrosByJugadorId,getAllJugadoresByEncuentroId,createEncuentroJugador,deleteEncuentroJugador,updateEncuentroJugador} =require('../Controllers/encuentroJugadorController');
+
+router.get('/:encuentro_id', getAllJugadoresByEncuentroId);
+router.get('/jugador/:jugador_id', getAllEncuentrosByJugadorId);
+router.post('/', createEncuentroJugador);
+router.put('/:encuentro_jugador_id', updateEncuentroJugador);
+router.delete('/:encuentro_jugador_id', deleteEncuentroJugador);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\encuentroJugadorRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\encuentrosRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const {
+  createEncuentro,
+  getEncuentroById,
+  getUltimosEncuentrosByClub,
+  updateEncuentro,
+  deleteEncuentro
+} = require('../Controllers/encuentrosController');
+
+const {authExtraction} = require('../Middlewares/authExtraction');
+const {userContext} = require('../Middlewares/userContext');
+
+router.post('/', authExtraction, userContext, createEncuentro);
+router.get('/ultimos', authExtraction, userContext, getUltimosEncuentrosByClub);
+router.get('/:encuentro_id', authExtraction, userContext, getEncuentroById);
+router.put('/:encuentro_id', authExtraction, userContext, updateEncuentro);
+router.delete('/:encuentro_id', authExtraction, userContext, deleteEncuentro);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\encuentrosRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\entrenamientosRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const {
+  createEntrenamiento,
+  getEntrenamientosByCategoria,
+  deleteEntrenamiento
+} = require('../Controllers/entrenamientosController');
+
+const {authExtraction} = require('../Middlewares/authExtraction');
+const {userContext} = require('../Middlewares/userContext');
+
+router.post('/', authExtraction, userContext, createEntrenamiento);
+router.get('/categoria/:categoria_id', authExtraction, userContext, getEntrenamientosByCategoria);
+router.delete('/:entrenamiento_id', authExtraction, userContext, deleteEntrenamiento);
+
+module.exports = router;
+
+--- FIN ARCHIVO: Routes\entrenamientosRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\estadisticasRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const {
+  getEstadisticasByEncuentro,
+  createEstadisticas
+} = require('../Controllers/estadisticasJugadoresController');
+
+const {authExtraction} = require('../Middlewares/authExtraction');
+const {userContext} = require('../Middlewares/userContext');
+
+router.get('/encuentro/:encuentro_id', authExtraction, userContext, getEstadisticasByEncuentro);
+router.post('/', authExtraction, userContext, createEstadisticas);
+
+module.exports = router;
+
+--- FIN ARCHIVO: Routes\estadisticasRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\gastosRoutes.js ---
+
+const express = require('express');
+const router = express.Router();
+
+const { getGastosByClubId,createGastos,deleteGastos,updateGastos,getGastosById }= require('../Controllers/gastosController');
+
+router.get('/club/:club_id', getGastosByClubId);
+router.get('/:gastos_id', getGastosById);
+router.post('/', createGastos);
+router.put('/:gastos_id', updateGastos);
+router.delete('/:gastos_id', deleteGastos);
+module.exports = router;
+--- FIN ARCHIVO: Routes\gastosRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\horariosEntrenamientoRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const {
+  getAllHorariosByCategoriaId,
+  getHorarioById,
+  createHorario,
+  createManyHorarios,
+  updateHorario,
+  deleteHorario
+} = require('../Controllers/horariosCategoriaController');
+
+// GET por categoría
+router.get('/categoria/:categoria_id', getAllHorariosByCategoriaId);
+
+// CREATE uno
+router.post('/categoria/:categoria_id', createHorario);
+
+// 🆕 CREATE MANY
+router.post('/categoria/:categoria_id/bulk', createManyHorarios);
+
+// GET / PUT / DELETE por id
+router.get('/:id_horario', getHorarioById);
+router.put('/:id_horario', updateHorario);
+router.delete('/:id_horario', deleteHorario);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\horariosEntrenamientoRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\index.js ---
+const { Router } = require('express');
+
+const categorias = require('./categoriasRoutes');
+const clientes = require('./clientesRoutes');
+const clubes = require('./clubesRoutes');
+const asistencia = require('./asistenciasRoutes');
+const usuarios = require('./usuariosRoutes')
+const gastos = require('./gastosRoutes')
+const jugadores = require('./jugadoresRoutes')
+const entrenamientos = require('./entrenamientosRoutes')
+const torneoCategoria = require('./torneoCategoriaRoutes')
+const torneo = require('./torneosRoutes')
+const tutores = require('./tutoresRoutes')
+const encuentros = require('./encuentrosRoutes')
+const encuentroJugador = require('./encuentroJugadorRoutes')
+const estadistica = require('./estadisticasRoutes')
+const auth = require('./authRoutes.js');
+const personalCategoria = require('./personalCategoriaRoutes');
+const usuariosClubes = require('./usuarioClubesRoutes');
+const horariosEntrenamiento = require('./horariosEntrenamientoRoutes.js');
+const jugadoresTutores = require('./jugadoresTutoresRoutes.js');
+const jugadoresPosiciones = require('./jugadoresPosicionesRoutes.js');
+const planesAfiliacion = require('./planesAfiliacionRoutes.js');
+const descuentosJugadores = require('./descuentosJugadoresRoutes.js');
+const invitaciones = require('./invitacionesRoutes.js');
+const ingresos = require('./ingresosRoutes.js');
+const pagos = require('./pagosRoutes.js');
+const cargos = require('./cargosRoutes.js');
+
+
+const router = Router();
+
+router.use('/personal-categoria', personalCategoria);
+router.use('/categorias', categorias);
+router.use('/clientes', clientes);
+router.use('/clubes', clubes);
+router.use('/asistencias', asistencia);
+router.use('/usuarios', usuarios);
+router.use('/gastos', gastos);
+router.use('/ingresos', ingresos);
+router.use('/jugadores', jugadores);
+router.use('/entrenamientos', entrenamientos);
+router.use('/torneos-categorias', torneoCategoria);
+router.use('/torneos', torneo);
+router.use('/tutores', tutores);
+router.use('/encuentros', encuentros);
+router.use('/encuentro-jugador', encuentroJugador);
+router.use('/estadisticas', estadistica);
+router.use('/auth', auth);
+router.use('/usuarios-clubes', usuariosClubes);
+router.use('/horarios-entrenamiento', horariosEntrenamiento);
+router.use('/jugadores-tutores', jugadoresTutores);
+router.use('/jugadores-posiciones', jugadoresPosiciones);
+router.use('/planes-afiliacion', planesAfiliacion);
+router.use('/descuentos-jugadores', descuentosJugadores);
+router.use('/invitaciones', invitaciones);
+router.use('/pagos', pagos);
+router.use('/cargos', cargos);
+
+
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\index.js ---
+
+
+--- INICIO ARCHIVO: Routes\ingresosRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const { authExtraction } = require('../Middlewares/authExtraction');
+const { userContext } = require('../Middlewares/userContext');
+const { requireRole } = require('../Middlewares/requireRole');
+
+const {
+  getAllIngresosByClub,
+  createIngreso,
+  updateIngreso,
+  deleteIngreso
+} = require('../Controllers/ingresosController');
+
+router.get(
+  '/',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  getAllIngresosByClub
+);
+
+router.post(
+  '/',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  createIngreso
+);
+
+router.put(
+  '/:ingreso_id',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  updateIngreso
+);
+
+router.delete(
+  '/:ingreso_id',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  deleteIngreso
+);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\ingresosRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\invitacionesRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const { authExtraction } = require('../Middlewares/authExtraction');
+const { userContext } = require('../Middlewares/userContext');
+const { requireRole } = require('../Middlewares/requireRole');
+
+const {  createInvitacion,  listInvitaciones,  validateInvitacion,  cancelInvitacion} = require('../Controllers/invitacionesController');
+
+router.post(  '/',  authExtraction,  userContext,  requireRole(['admin']),  createInvitacion);
+
+router.get(  '/',  authExtraction,  userContext,  requireRole(['admin']),  listInvitaciones);
+
+router.get('/token/:token', validateInvitacion);
+
+router.delete(  '/:invitacion_id',  authExtraction,  userContext,  requireRole(['admin']),  cancelInvitacion);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\invitacionesRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\jugadoresPosicionesRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const {
+  createJugadorPosicion,
+  createManyJugadorPosiciones,
+  deleteJugadorPosicion,
+  deleteAllJugadorPosiciones
+} = require('../Controllers/jugadoresPosicionesController');
+
+/**
+ * Crear una posición
+ */
+router.post('/', createJugadorPosicion);
+
+/**
+ * Crear muchas posiciones
+ */
+router.post('/bulk', createManyJugadorPosiciones);
+
+/**
+ * Borrar una posición
+ */
+router.delete('/:jugador_id/:posicion_id', deleteJugadorPosicion);
+
+/**
+ * Borrar todas las posiciones de un jugador
+ */
+router.delete('/jugador/:jugador_id', deleteAllJugadorPosiciones);
+
+module.exports = router;
+
+--- FIN ARCHIVO: Routes\jugadoresPosicionesRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\jugadoresRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const {authExtraction} = require('../Middlewares/authExtraction');
+const {userContext} = require('../Middlewares/userContext');
+
+const { getJugadoresByClub,
+    getJugadoresByPosicion,
+    getJugadoresOrdenados,
+    getPlayersMainCardsByClub,
+    getJugadorContacto,
+    searchJugadores,
+    getJugadoresByCategoria,
+    getJugadorById,
+    getJugadorConPosiciones,
+    getMainPlayerCardData,
+    createJugador,
+    updateJugador,
+    deleteJugador ,
+    getJugadorDeportivo} = require('../Controllers/jugadoresController');
+    
+// const estadoCuentaController = require('../Controllers/estadoCuentaController');
+const pagosController = require('../Controllers/pagosController');
+
+router.get('/main-cards', authExtraction, userContext, getPlayersMainCardsByClub);
+router.get('/', authExtraction, userContext, getJugadoresByClub);
+router.get('/search',authExtraction,userContext,searchJugadores);
+router.get('/categoria/:categoria_id', authExtraction, userContext, getJugadoresByCategoria);
+router.get('/:jugador_id', authExtraction, userContext, getJugadorById);
+router.get('/:jugador_id/main-card', authExtraction, userContext, getMainPlayerCardData);
+router.get('/:jugador_id/full', authExtraction, userContext, getJugadorConPosiciones);
+router.post('/', authExtraction, userContext, createJugador);
+router.put('/:jugador_id', authExtraction, userContext, updateJugador);
+router.delete('/:jugador_id',authExtraction, userContext, deleteJugador);
+router.get('/posicion/:categoria_posicion',authExtraction,userContext,getJugadoresByPosicion);
+router.get('/orden',authExtraction,userContext,getJugadoresOrdenados);
+
+
+
+
+
+// Info deportiva
+router.get('/:jugador_id/deportivo',  getJugadorDeportivo);
+
+
+
+
+/** * Registrar pago (MVP)*/
+router.post('/pagos',  pagosController.registrarPago);
+
+/** * 📞 Contacto jugador + tutor */
+router.get(
+'/:jugador_id/contacto',  getJugadorContacto);
+
+const {
+  getFinanzasJugador
+} = require('../Controllers/jugadoresFinanzasController');
+
+router.get('/:jugador_id/estado-cuenta', getFinanzasJugador);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\jugadoresRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\jugadoresTutoresRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const {
+  getRelacionesByJugadorId,
+  getRelacionesByTutorId,
+  getRelacionByIds
+} = require('../Controllers/jugadoresTutoresController');
+
+// Consultas
+router.get('/jugador/:id', getRelacionesByJugadorId);
+router.get('/tutor/:id', getRelacionesByTutorId);
+router.get('/:jugador_id/:tutor_id', getRelacionByIds);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\jugadoresTutoresRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\pagosRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const {
+  registrarPago
+} = require('../Controllers/pagosController');
+const { authExtraction } = require('../Middlewares/authExtraction');
+
+/*
+POST /api/pagos
+Body:
+{
+  jugador_id: 1,
+  metodo_pago: "efectivo",
+  referencia: "recibo 123",
+  cargos: [
+    { cargo_jugador_id: 10, monto: 50000 },
+    { cargo_jugador_id: 12, monto: 30000 }
+  ]
+}
+*/
+router.post('/', authExtraction, registrarPago);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\pagosRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\personalCategoriaRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const { authExtraction } = require('../Middlewares/authExtraction');
+const { userContext } = require('../Middlewares/userContext');
+const { requireRole } = require('../Middlewares/requireRole');
+
+const {
+  getCategoriasByUsuario,
+  getUsuariosByCategoria,
+  createCategoriaUsuario,
+  updatePersonalCategoria,
+  deletePersonalCategoria,
+  getPersonalByClub
+} = require('../Controllers/personalCategoriaController');
+const { get } = require('http');
+
+
+router.get(
+  '/club/personal',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  getPersonalByClub
+);
+
+router.get(
+  '/usuario/:user_id/categorias',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  getCategoriasByUsuario
+);
+
+router.get(
+  '/categoria/:categoria_id/usuarios',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  getUsuariosByCategoria
+);
+
+router.post(
+  '/',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  createCategoriaUsuario
+);
+
+router.put(
+  '/:id',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  updatePersonalCategoria
+);
+
+router.delete(
+  '/:id',
+  authExtraction,
+  userContext,
+  requireRole(['admin']),
+  deletePersonalCategoria
+);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\personalCategoriaRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\planesAfiliacionRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const { authExtraction } = require('../Middlewares/authExtraction');
+const { userContext } = require('../Middlewares/userContext');
+const { requireRole } = require('../Middlewares/requireRole');
+
+const {
+  getAllPlanes,
+  getPlanById,
+  createPlan,
+  updatePlan,
+  deletePlan
+} = require('../Controllers/planesAfiliacionController');
+
+router.get('/', authExtraction, userContext, getAllPlanes);
+router.get('/:id', authExtraction, userContext, getPlanById);
+router.post('/', authExtraction, userContext, requireRole(['admin']), createPlan);
+router.put('/:id', authExtraction, userContext, requireRole(['admin']), updatePlan);
+router.delete('/:id', authExtraction, userContext, requireRole(['admin']), deletePlan);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\planesAfiliacionRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\torneoCategoriaRoutes.js ---
+
+const express = require('express');
+const router = express.Router();
+const { inscribirCategoria, getCategoriasByTorneo, getTorneosByCategoria, deleteRelacion } = require('../Controllers/torneoCategoriaController');
+
+
+//Rutas para torneo-categoria
+router.post('/', inscribirCategoria);
+router.get('/:torneo_id', getCategoriasByTorneo);
+router.get('/categorias/:categoria_id', getTorneosByCategoria);
+router.delete('/:torneo_categoria_id', deleteRelacion);
+module.exports = router;
+--- FIN ARCHIVO: Routes\torneoCategoriaRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\torneosRoutes.js ---
+const { Router } = require('express');
+const router = Router();
+
+const {authExtraction} = require('../Middlewares/authExtraction');
+const {userContext} = require('../Middlewares/userContext');
+const {requireRole} = require('../Middlewares/requireRole');
+
+const {
+  getTorneosByClub,
+  getTorneoById,
+  getTorneosByCategoria,
+  createTorneo,
+  updateTorneo,
+  deleteTorneo,
+  addCategoriaToTorneo,
+  getCategoriasByTorneo,
+  removeCategoriaFromTorneo
+
+} = require('../Controllers/torneosController');
+
+router.get('/', authExtraction, userContext, getTorneosByClub);
+router.get('/:torneo_id', authExtraction, userContext, getTorneoById);
+router.post('/', authExtraction, userContext, requireRole(['admin']), createTorneo);
+router.put('/:torneo_id', authExtraction, userContext, requireRole(['admin']), updateTorneo);
+router.delete('/:torneo_id', authExtraction, userContext, requireRole(['admin']), deleteTorneo);
+
+/* Relación torneo - categoría */
+
+router.post('/categorias', authExtraction, userContext, requireRole(['admin']), addCategoriaToTorneo);
+router.get('/:torneo_id/categorias', authExtraction, userContext, getCategoriasByTorneo);
+router.delete('/:torneo_id/categorias/:categoria_id', authExtraction, userContext, requireRole(['admin']), removeCategoriaFromTorneo);
+router.get('/categoria/:categoria_id', authExtraction, userContext, getTorneosByCategoria);
+module.exports = router;
+--- FIN ARCHIVO: Routes\torneosRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\tutoresRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const {  getTutorByDni,  getTutorById,  getTutoresByJugadorId,  createTutor,  linkTutorJugador,  updateTutor,  deleteTutor } = require('../Controllers/tutoresController');
+const { authExtraction } = require('../Middlewares/authExtraction');
+
+// 🔍 Autocompletar por DNI
+router.get('/dni/:dni', getTutorByDni);
+
+// Relaciones
+router.get('/jugador/:id', getTutoresByJugadorId);
+router.post('/link', linkTutorJugador);
+
+// CRUD
+router.get('/:id',authExtraction,getTutorById);
+router.post('/', authExtraction, createTutor);
+router.put('/:id', authExtraction, updateTutor);
+router.delete('/:id', authExtraction, deleteTutor);
+
+module.exports = router;
+--- FIN ARCHIVO: Routes\tutoresRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\usuarioClubesRoutes.js ---
+const express = require("express");
+const router = express.Router();
+
+const {authExtraction} = require("../Middlewares/authExtraction");
+const {userContext} = require("../Middlewares/userContext");
+const {requireRole} = require("../Middlewares/requireRole");
+
+const {listClubUsers,createClubUser,updateRoleClubUser,removeClubUser,getMyClubContext} = require("../Controllers/usuariosClubesController");
+
+router.get(
+  "/",
+  authExtraction,
+  userContext,
+  requireRole(["admin"]),
+  listClubUsers
+);
+
+router.post(
+  "/",
+  authExtraction,
+  userContext,
+  requireRole(["admin"]),
+  createClubUser
+);
+
+router.put(
+  "/:usuario_club_id",
+  authExtraction,
+  userContext,
+  requireRole(["admin"]),
+  updateRoleClubUser
+);
+
+router.delete(
+  "/:usuario_club_id",
+  authExtraction,
+  userContext,
+  requireRole(["admin"]),
+  removeClubUser
+);
+
+router.get(
+  '/context',
+  authExtraction,
+  userContext,
+  getMyClubContext
+);
+
+module.exports = router;
+
+--- FIN ARCHIVO: Routes\usuarioClubesRoutes.js ---
+
+
+--- INICIO ARCHIVO: Routes\usuariosRoutes.js ---
+const express = require('express');
+const router = express.Router();
+
+const { authExtraction } = require('../Middlewares/authExtraction.js')
+const { getUserById,getAllUsers,createUser,updateUser,updateUserPassword,deleteUser, updateUserMail,getUsersByClubId} = require('../Controllers/usuariosController'); 
+
+router.get('/', getAllUsers);
+router.get('/club/:club_id', getUsersByClubId);
+router.get('/user', authExtraction, getUserById);
+router.post('/', createUser);
+router.put('/:id', updateUser);
+router.patch('/:id/password', updateUserPassword);
+router.delete('/:id', deleteUser);
+router.patch('/:id/email', updateUserMail);
+
+
+module.exports = router;
+
+--- FIN ARCHIVO: Routes\usuariosRoutes.js ---
+
+
+--- INICIO ARCHIVO: Scripts\generarCargosMensuales.js ---
+const pool = require('../Utils/Pool');
+async function generarCargosMensuales(club_id) {
+  console.log('▶ Generando cargos mensuales...');
+
+  /* 1️⃣ Ciclo abierto */
+  const [[ciclo]] = await pool.query(`
+    SELECT ciclo_id
+    FROM ciclos_facturacion
+    WHERE club_id = ?
+      AND estado = 'abierto'
+  `, [club_id]);
+
+  if (!ciclo) throw new Error('No hay ciclo abierto');
+  const ciclo_id = ciclo.ciclo_id;
+
+  /* 2️⃣ Cargo mensual */
+  const [[cargo]] = await pool.query(`
+    SELECT cargo_id, concepto_id, monto_base
+    FROM cargos
+    WHERE club_id = ?
+      AND activo = 1
+    LIMIT 1
+  `, [club_id]);
+
+  if (!cargo) throw new Error('No hay cargo configurado');
+
+  /* 3️⃣ Jugadores + planes */
+  const [jugadores] = await pool.query(`
+    SELECT
+      j.jugador_id,
+      COALESCE(pa.porcentaje_aplicado, 100) AS porcentaje_plan,
+      COALESCE(dj.porcentaje_descuento, 0) AS descuento_personal
+    FROM jugadores j
+    LEFT JOIN planes_afiliacion pa
+      ON pa.plan_afiliacion_id = j.plan_afiliacion_id
+    LEFT JOIN descuentos_jugadores dj
+      ON dj.jugador_id = j.jugador_id
+     AND dj.activo = 1
+    WHERE j.activo = 1
+  `);
+
+  for (const j of jugadores) {
+    const planBase = Number(cargo.monto_base);
+    const porcentajePlan = Number(j.porcentaje_plan);
+    const descuentoPersonal = Number(j.descuento_personal);
+
+    // ✔️ cálculo correcto
+    const montoPlan = planBase * (porcentajePlan / 100);
+    const montoFinal = Math.max(
+      Math.round(montoPlan * (1 - descuentoPersonal / 100)),
+      0
+    );
+
+    const estado = montoFinal === 0 ? 'pagado' : 'pendiente';
+
+    // evitar duplicados
+    const [[exists]] = await pool.query(`
+      SELECT 1
+      FROM cargos_jugadores
+      WHERE jugador_id = ?
+        AND cargo_id = ?
+        AND ciclo_id = ?
+    `, [j.jugador_id, cargo.cargo_id, ciclo_id]);
+
+    if (exists) continue;
+
+    await pool.query(`
+      INSERT INTO cargos_jugadores
+        (jugador_id, cargo_id, concepto_id, ciclo_id, monto, estado)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [
+      j.jugador_id,
+      cargo.cargo_id,
+      cargo.concepto_id,
+      ciclo_id,
+      montoFinal,
+      estado
+    ]);
+  }
+
+  console.log('✅ Cargos generados correctamente');
+}
+module.exports = {
+  generarCargosMensuales
+};
+--- FIN ARCHIVO: Scripts\generarCargosMensuales.js ---
+
+
+--- INICIO ARCHIVO: Scripts\runGenerarCargosMensuales.js ---
+const { generarCargosMensuales } = require('./generarCargosMensuales');
+
+(async () => {
+  try {
+    await generarCargosMensuales(1);
+    process.exit(0);
+  } catch (err) {
+    console.error(err);
+    process.exit(1);
+  }
+})();
+--- FIN ARCHIVO: Scripts\runGenerarCargosMensuales.js ---
+
+
+--- INICIO ARCHIVO: Services\authService.js ---
+
+const { JWT_SECRET, JWT_EXPIRATION, JWT_SLIDING_THRESHOLD } = require("../Utils/jwtConfig.js");
+
+(async () => {
+  const jose = await import("jose");
+  SignJWT = jose.SignJWT;
+  jwtVerify = jose.jwtVerify;
+})();
+
+const secret = new TextEncoder().encode(JWT_SECRET);
+
+const generateToken = async (payload) => {
+    const token = await new SignJWT(payload)
+        .setProtectedHeader({alg: "HS256"})
+        .setIssuedAt()
+        .setExpirationTime(JWT_EXPIRATION)
+        .sign(secret);
+
+    return token;
+}
+
+const verifyTokenOnly = async (token) => {
+    try {
+        const { payload } = await jwtVerify(token, secret);
+        return { valid: true, payload };
+    } catch (error) {
+        return { valid: false, error };
+    }
+}
+
+const verifyAndRefreshToken = async (token) => {
+
+    try {
+
+        const { payload } = await jwtVerify(token, secret);
+
+
+        //calcular tiempo restante
+        const exp = payload.exp * 1000
+        const now = Date.now();
+        const timeLeft = Math.floor((exp - now) / 1000);
+
+        let newToken = null;
+
+        //si queda menos del umbral, renovar token
+
+        if (timeLeft < JWT_SLIDING_THRESHOLD) {
+            newToken = await generateToken({ userId: payload.userId });
+
+        }
+
+
+        return {valid:true,payload, newToken};
+    } catch (error) {
+        return {valid:false, error};
+    }
+}
+module.exports = {
+    generateToken,
+    verifyTokenOnly,
+    verifyAndRefreshToken
+};
+--- FIN ARCHIVO: Services\authService.js ---
+
+
+--- INICIO ARCHIVO: Services\categoryServices.js ---
+
+--- FIN ARCHIVO: Services\categoryServices.js ---
+
+
+--- INICIO ARCHIVO: Services\userServices.js ---
+const bcrypt = require("bcrypt");
+const { generateToken } = require("../Services/authService.js");
+
+const { findUserByEmailModel, findUserByUsernameModel } = require("../Models/usuarios.js");
+
+const login = async (identifier, password) => {
+    let user;
+    if(!identifier.includes('@')){
+        user = await findUserByUsernameModel(identifier)
+    }else{
+        user = await findUserByEmailModel(identifier);
+    }
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+        const error = new Error("Credenciales inválidas");
+        error.status = 401;
+        throw error;
+    }
+    const club_id = user.club_id || null;
+    // Modelo a futuro : 
+    // const club_id = resolveClubFromSubdomain(req);
+    
+    return generateToken({ user_id: user.user_id,club_id });
+};
+
+
+
+module.exports = {
+    login
+};
+--- FIN ARCHIVO: Services\userServices.js ---
+
+
+--- INICIO ARCHIVO: Utils\jwtConfig.js ---
+const { TextEncoder } = require('util');
+
+const JWT_SECRET = new TextEncoder().encode(process.env.jwt_Secret);
+const JWT_EXPIRATION = "8h"; //Duración del token
+const JWT_SLIDING_THRESHOLD = 10 * 60; // Tiempo para renovar el token y evitar cierre de sesión en caso de estar activo (10 minutos)
+
+module.exports = {
+    JWT_SECRET,
+    JWT_EXPIRATION,
+    JWT_SLIDING_THRESHOLD
+};
+
+--- FIN ARCHIVO: Utils\jwtConfig.js ---
+
+
+--- INICIO ARCHIVO: Utils\Pool.js ---
+const mysql = require('mysql2/promise');
+const env = require('dotenv')
+env.config();
+
+const pool = mysql.createPool({
+  host: process.env.db_host,
+  user: process.env.db_user,
+  password: process.env.db_password,
+  database: process.env.db_name,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+module.exports = pool;
+--- FIN ARCHIVO: Utils\Pool.js ---

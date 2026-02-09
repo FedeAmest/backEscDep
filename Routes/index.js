@@ -24,6 +24,9 @@ const planesAfiliacion = require('./planesAfiliacionRoutes.js');
 const descuentosJugadores = require('./descuentosJugadoresRoutes.js');
 const invitaciones = require('./invitacionesRoutes.js');
 const ingresos = require('./ingresosRoutes.js');
+const pagos = require('./pagosRoutes.js');
+const cargos = require('./cargosRoutes.js');
+
 
 const router = Router();
 
@@ -51,5 +54,9 @@ router.use('/jugadores-posiciones', jugadoresPosiciones);
 router.use('/planes-afiliacion', planesAfiliacion);
 router.use('/descuentos-jugadores', descuentosJugadores);
 router.use('/invitaciones', invitaciones);
+router.use('/pagos', pagos);
+router.use('/cargos', cargos);
+
+
 
 module.exports = router;

@@ -88,7 +88,46 @@ const deleteCargoModel = async (cargo_id) => {
   return res.affectedRows > 0;
 };
 
+/* ===============================
+  OBTENER CARGO POR ID
+================================ */
+const getCargoByIdModel = async (cargo_jugador_id) => {
+  const [rows] = await pool.query(`
+    SELECT
+      cj.cargo_jugador_id,
+      cj.jugador_id,
+      j.nombre AS jugador_nombre,
+      cj.monto AS monto_original,
+      IFNULL(p.total_pagado, 0) AS pagado_total,
+      (cj.monto - IFNULL(p.total_pagado, 0)) AS saldo_pendiente,
+      cj.estado,
+      cj.creado_en,
+      cf.nombre_default AS concepto
+
+    FROM cargos_jugadores cj
+
+    JOIN conceptos_facturacion cf
+      ON cf.concepto_id = cj.concepto_id
+    JOIN jugadores j
+      ON j.jugador_id = cj.jugador_id
+    JOIN categorias c
+      ON c.categoria_id = j.categoria_id
+    LEFT JOIN (
+      SELECT
+        cargo_jugador_id,
+        SUM(monto_aplicado) AS total_pagado
+      FROM ingresos_cargos
+      GROUP BY cargo_jugador_id
+    ) p ON p.cargo_jugador_id = cj.cargo_jugador_id
+
+    WHERE cj.cargo_jugador_id = ?
+  `, [cargo_jugador_id]);
+
+  return rows[0];
+};
+
 module.exports = {
+  getCargoByIdModel,
   getCargosByJugadorModel,
   getCargosByClubModel,
   createCargoModel,

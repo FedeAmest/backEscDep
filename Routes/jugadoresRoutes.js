@@ -17,7 +17,6 @@ const { getJugadoresByClub,
     createJugador,
     updateJugador,
     deleteJugador ,
-    getJugadorEstadoCuenta,
     getJugadorDeportivo} = require('../Controllers/jugadoresController');
     
 // const estadoCuentaController = require('../Controllers/estadoCuentaController');
@@ -35,6 +34,9 @@ router.put('/:jugador_id', authExtraction, userContext, updateJugador);
 router.delete('/:jugador_id',authExtraction, userContext, deleteJugador);
 router.get('/posicion/:categoria_posicion',authExtraction,userContext,getJugadoresByPosicion);
 router.get('/orden',authExtraction,userContext,getJugadoresOrdenados);
+
+
+
 
 
 // Info deportiva

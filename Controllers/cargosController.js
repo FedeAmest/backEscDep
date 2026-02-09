@@ -1,15 +1,17 @@
 const {
+  getCargoByIdModel,
   getCargosByJugadorModel,
   getCargosByClubModel,
   createCargoModel,
   updateCargoEstadoModel,
   deleteCargoModel
-} = require('../Models/cargosJugadores');
+} = require('../Models/cargos');
 
 /* ===============================
    CARGOS POR JUGADOR
 ================================ */
 const getCargosByJugador = async (req, res) => {
+  console.log('🔍 getCargosByJugador - jugador_id:', req.params.jugador_id); // Debug log
   const { jugador_id } = req.params;
   const cargos = await getCargosByJugadorModel(jugador_id);
   res.json(cargos);
@@ -57,7 +59,23 @@ const deleteCargo = async (req, res) => {
   res.json({ message: 'Cargo anulado' });
 };
 
+/* ===============================
+  OBTENER CARGO POR ID
+================================ */
+const getCargoById = async (req, res) => {
+  const { cargo_id } = req.params;
+
+  const cargo = await getCargoByIdModel(cargo_id);
+
+  if (!cargo) {
+    return res.status(404).json({ error: 'Cargo no encontrado' });
+  }
+
+  res.json(cargo);
+};
+
 module.exports = {
+  getCargoById,
   getCargosByJugador,
   getCargosByClub,
   createCargo,

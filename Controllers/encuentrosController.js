@@ -25,7 +25,7 @@ const createEncuentro = async (req, res) => {
 
   const club = await getClubByIdModel(req.auth.club_id);
   const nombreClub = club.nombre;
-
+ 
   let equipo_local, equipo_visitante;
   let gl, gv;
 
@@ -37,8 +37,8 @@ const createEncuentro = async (req, res) => {
   } else {
     equipo_local = rival;
     equipo_visitante = nombreClub;
-    gl = goles_visitante;
-    gv = goles_local;
+    gl = goles_local;
+    gv = goles_visitante;
   }
 
   let resultado = 'empate';

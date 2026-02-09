@@ -32,10 +32,18 @@ async function getPlanFinancieroJugador(jugador_id) {
 async function getEstadoCuentaRaw(jugador_id) {
   const [[row]] = await pool.query(`
     SELECT
-      COALESCE(SUM(CASE WHEN estado = 'pendiente' THEN monto ELSE 0 END),0) AS deuda,
-      COALESCE(SUM(CASE WHEN estado = 'pagado' THEN monto ELSE 0 END),0)    AS pagado
-    FROM cargos_jugadores
-    WHERE jugador_id = ?
+      COALESCE(SUM(cj.monto - IFNULL(p.total_pagado, 0)), 0) AS deuda,
+      COALESCE(SUM(IFNULL(p.total_pagado, 0)), 0) AS pagado
+    FROM cargos_jugadores cj
+    LEFT JOIN (
+      SELECT
+        cargo_jugador_id,
+        SUM(monto_aplicado) AS total_pagado
+      FROM ingresos_cargos
+      GROUP BY cargo_jugador_id
+    ) p ON p.cargo_jugador_id = cj.cargo_jugador_id
+    WHERE cj.jugador_id = ?
+      AND cj.estado != 'anulado'
   `, [jugador_id]);
 
   return row;
